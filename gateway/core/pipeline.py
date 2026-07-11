@@ -35,6 +35,7 @@ class Pipeline:
         audit: AuditLog,
         fail_closed: bool = True,
         custom_rules: CustomRuleRegistry | None = None,
+        semantic_guard=None,
     ):
         self.policy = policy_engine
         self.store = mapping_store
@@ -42,6 +43,7 @@ class Pipeline:
         self.audit = audit
         self.fail_closed = fail_closed
         self.custom_rules = custom_rules
+        self.semantic_guard = semantic_guard
 
     def sanitize(self, req: CheckRequest) -> CheckResponse:
         """Этапы Detect -> Policy -> Tokenize (без форварда).
@@ -94,6 +96,43 @@ class Pipeline:
                 verdict = Verdict.ALLOWED
             else:
                 verdict = Verdict.MASKED
+
+            # Э3: семантический судья поверх обезличенного текста
+            semantic_message: str | None = None
+            if self.semantic_guard and self.semantic_guard.mode != "off":
+                try:
+                    suspicious = self.semantic_guard.review(masked_text)
+                except Exception as e:
+                    logger.warning("Семантический судья недоступен: %s", e)
+                    # в режиме block недоступность судьи = fail-closed
+                    suspicious = self.semantic_guard.mode == "block"
+                    if suspicious:
+                        semantic_message = (
+                            "Семантический детект недоступен, запрос "
+                            "заблокирован (fail-closed)."
+                        )
+                if suspicious:
+                    if self.semantic_guard.mode == "block":
+                        actions_str["SEMANTIC"] = "block"
+                        self.audit.append(
+                            user=req.user,
+                            channel=req.channel,
+                            provider=self.forwarder.provider_name,
+                            verdict=Verdict.BLOCKED,
+                            entity_counts=entity_counts,
+                            policy_actions=actions_str,
+                            request_id=request_id,
+                        )
+                        return CheckResponse(
+                            verdict=Verdict.BLOCKED,
+                            request_id=request_id,
+                            session_id=session_id,
+                            entity_counts=entity_counts,
+                            message=semantic_message
+                            or "Запрос заблокирован: семантический детект счёл "
+                            "содержимое конфиденциальным.",
+                        )
+                    actions_str["SEMANTIC"] = "flag"
 
             self.audit.append(
                 user=req.user,
@@ -149,7 +188,14 @@ class Pipeline:
             return result
 
         try:
-            answer = self.forwarder.complete(result.masked_text or req.text)
+            # Э3: запросы с чувствительными данными — на выделенный
+            # (обычно локальный) провайдер, если задан политикой
+            provider = None
+            if result.entity_counts and self.policy.policy.sensitive_provider:
+                provider = self.policy.policy.sensitive_provider
+            answer = self.forwarder.complete(
+                result.masked_text or req.text, provider=provider
+            )
             result.answer = detokenize(answer, self.store, result.session_id)
             return result
         except ProviderError as e:

@@ -47,18 +47,20 @@ class FakeForwarder:
 
     def __init__(self, reply_template: str = "Ответ про {text}", fail: bool = False):
         self.sent: list[str] = []
+        self.providers_used: list[str | None] = []
         self.reply_template = reply_template
         self.fail = fail
 
-    def complete(self, sanitized_text: str) -> str:
+    def complete(self, sanitized_text: str, provider=None, model=None) -> str:
         if self.fail:
             raise ProviderError("provider down")
         self.sent.append(sanitized_text)
+        self.providers_used.append(provider)
         # LLM «цитирует» плейсхолдеры в ответе
         return self.reply_template.format(text=sanitized_text)
 
-    def chat(self, messages, model=None) -> str:
+    def chat(self, messages, model=None, provider=None) -> str:
         joined = " ".join(
             m["content"] for m in messages if isinstance(m.get("content"), str)
         )
-        return self.complete(joined)
+        return self.complete(joined, provider=provider)

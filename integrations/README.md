@@ -43,6 +43,31 @@ chmod +x .git/hooks/pre-commit
 `АйГейтАдресШлюза` и `АйГейтКлючКанала`. Код — пример под 8.3.10+,
 проверьте на своей конфигурации.
 
+## mcp/ — MCP-сервер для Claude Desktop и других MCP-хостов (Э3)
+
+Инструменты `aigate_check` (маскирование), `aigate_ask` (запрос к LLM через
+шлюз) и `aigate_report` доступны любому MCP-хосту. Агент вызывает инструмент
+вместо прямой отправки чувствительного текста провайдеру.
+
+`claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "aigate": {
+      "command": "python3",
+      "args": ["/opt/aigate/integrations/mcp/aigate_mcp_server.py"],
+      "env": {
+        "AIGATE_AGENT_GATEWAY_URL": "http://aigate.internal:8080",
+        "AIGATE_AGENT_CHANNEL_KEY": "<ключ канала>"
+      }
+    }
+  }
+}
+```
+
+Реализация — чистая stdlib (JSON-RPC 2.0 по stdio), устанавливать нечего.
+
 ## Bitrix24 и другие веб-приложения
 
 Всё, что умеет OpenAI-совместимый API, подключается без коннектора —

@@ -70,6 +70,12 @@ class Settings:
     detector_rules_path: Path = field(
         default_factory=lambda: Path("data/detector_rules.json")
     )
+    providers_path: Path = field(default_factory=lambda: Path("data/providers.json"))
+
+    # --- Семантический детект (Э3): off | flag | block ---
+    semantic_guard_mode: str = "off"
+    # провайдер-судья (рекомендуется локальная LLM); пусто = по умолчанию
+    semantic_guard_provider: str = ""
 
     # --- Fail-closed (глобальный предохранитель; выключать только на стенде) ---
     fail_closed: bool = True
@@ -94,5 +100,8 @@ class Settings:
             detector_rules_path=Path(
                 _env("DETECTOR_RULES_PATH", "data/detector_rules.json")
             ),
+            providers_path=Path(_env("PROVIDERS_PATH", "data/providers.json")),
+            semantic_guard_mode=_env("SEMANTIC_GUARD", "off"),
+            semantic_guard_provider=_env("SEMANTIC_GUARD_PROVIDER", ""),
             fail_closed=_env_bool("FAIL_CLOSED", True),
         )

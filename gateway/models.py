@@ -142,6 +142,10 @@ class Policy:
     # переопределения: группа пользователей -> {entity_type -> action}
     group_overrides: dict[str, dict[str, Action]] = field(default_factory=dict)
     fail_closed: bool = True
+    # Э3: запросы, в которых были замаскированы сущности, маршрутизируются
+    # на указанный провайдер (например, локальную LLM) вместо провайдера
+    # по умолчанию. None = маршрутизация выключена.
+    sensitive_provider: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
@@ -156,6 +160,7 @@ class Policy:
                 for g, m in self.group_overrides.items()
             },
             "fail_closed": self.fail_closed,
+            "sensitive_provider": self.sensitive_provider,
         }
 
     @classmethod
@@ -172,6 +177,7 @@ class Policy:
                 for g, m in d.get("group_overrides", {}).items()
             },
             fail_closed=d.get("fail_closed", True),
+            sensitive_provider=d.get("sensitive_provider"),
         )
 
 

@@ -53,6 +53,13 @@ on-prem, data residency в РК, готовые политики под Зако
   подмена или удаление записи обнаруживается верификацией.
 - **Zero-dependency ядро**: чистая stdlib Python 3.11+ — устанавливается
   и работает в air-gapped периметре без доступа к PyPI.
+- **Мультипровайдер и локальная LLM (Э3)**: реестр провайдеров (OpenAI-совместимые,
+  включая vLLM/Ollama/LM Studio, и Anthropic Messages API); выбор через
+  `provider/model` или политику; правило «запросы с чувствительными данными —
+  только на локальную LLM» (`sensitive_provider`).
+- **Семантический детект (Э3)**: LLM-judge поверх уже обезличенного текста
+  ловит утечки «по смыслу» (планы сделок, финпоказатели); режимы
+  flag/block, fail-closed при недоступности судьи.
 
 ## Быстрый старт
 
@@ -150,12 +157,43 @@ curl -s localhost:8080/admin/api/audit/verify -H 'Authorization: Bearer <ток�
 
 # настраиваемые правила детекта (маркеры коммерческой тайны и т.п.)
 curl -s localhost:8080/admin/api/detector-rules -H 'Authorization: Bearer <токен>'
+
+# провайдеры (Э3): ключи наружу не отдаются
+curl -s localhost:8080/admin/api/providers -H 'Authorization: Bearer <токен>'
 ```
+
+## Мультипровайдер и локальная LLM (Э3)
+
+Провайдеры управляются через `PUT /admin/api/providers` (или напрямую в
+`data/providers.json`); PUT без `api_key` сохраняет уже настроенный ключ:
+
+```json
+{
+  "default": "openai",
+  "providers": [
+    {"name": "openai", "kind": "openai", "base_url": "https://api.openai.com/v1",
+     "api_key": "sk-...", "model": "gpt-4o-mini"},
+    {"name": "local", "kind": "openai", "base_url": "http://ollama.internal:11434/v1",
+     "model": "llama3.1"},
+    {"name": "claude", "kind": "anthropic", "base_url": "https://api.anthropic.com/v1",
+     "api_key": "sk-ant-...", "model": "claude-sonnet-5"}
+  ]
+}
+```
+
+Маршрутизация: `"model": "local/llama3.1"` в запросе → провайдер `local`;
+поле политики `"sensitive_provider": "local"` направляет **все запросы с
+замаскированными данными** на локальную LLM — данные вообще не покидают
+периметр (air-gapped сценарий Э3).
+
+Семантический детект: `AIGATE_SEMANTIC_GUARD=flag|block` +
+`AIGATE_SEMANTIC_GUARD_PROVIDER=local` — судья получает только
+обезличенный текст.
 
 ## Тесты
 
 ```bash
-python -m unittest discover -s tests -t .   # 104 теста, без внешних зависимостей
+python -m unittest discover -s tests -t .   # 137 тестов, без внешних зависимостей
 ```
 
 Тесты покрывают критерии приёмки MVP (раздел 11 ТЗ): наружу не уходит ни одно
@@ -183,8 +221,8 @@ gateway/
   static/index.html       # админ-консоль
 extension/                # браузерное расширение (Manifest V3, Chrome/Edge/Firefox)
 agent/                    # endpoint-агент: clipboard + локальные приложения (Э1.5)
-integrations/             # IDE-hook Claude Code, git pre-commit, 1С (Э2)
-tests/                    # unittest, 104 теста
+integrations/             # IDE-hook Claude Code, git pre-commit, 1С, MCP-сервер
+tests/                    # unittest, 137 тестов
 docs/                     # ТЗ, инструкции по каналам
 ```
 
@@ -197,8 +235,10 @@ docs/                     # ТЗ, инструкции по каналам
   git pre-commit, коннектор 1С, развёрнутые отчёты + CSV —
   см. [integrations/](integrations/README.md). Осталось: модуль Bitrix24,
   NER-модель для ФИО.
-- **Э3**: мультипровайдер, локальная LLM «из коробки», MCP/агентный слой,
-  ИИ-детект контекстных утечек.
+- **Э3** (частично ✅): мультипровайдер (OpenAI-совместимые + Anthropic),
+  локальная LLM и маршрутизация чувствительных запросов, MCP-сервер для
+  Claude Desktop, семантический ИИ-детект (LLM-judge). Осталось:
+  стриминг, Kubernetes, экспансия детекторов на СНГ/ЦА.
 
 ## Ограничения MVP
 

@@ -29,6 +29,7 @@ from pathlib import Path
 from gateway import __version__
 from gateway.config import Settings
 from gateway.core.pipeline import Pipeline
+from gateway.core.providers import ProviderConfig
 from gateway.models import Channel, CheckRequest, DetectorRule, Policy, Verdict
 
 logger = logging.getLogger("aigate.server")
@@ -187,6 +188,19 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 self._send_json(
                     200, [r.to_dict() for r in self.pipeline.custom_rules.rules]
                 )
+            elif route == "/admin/api/providers":
+                self._require_admin_auth()
+                registry = getattr(self.pipeline.forwarder, "registry", None)
+                if registry is None:
+                    raise ApiError(404, "Мультипровайдер не сконфигурирован")
+                # ключи наружу не отдаются — только флаг api_key_configured
+                self._send_json(
+                    200,
+                    {
+                        "default": registry.default_name,
+                        "providers": [p.to_dict() for p in registry.list()],
+                    },
+                )
             elif route == "/admin/api/config":
                 self._require_admin_auth()
                 s = self.settings
@@ -265,6 +279,26 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 except (ValueError, KeyError, TypeError, re.error) as e:
                     raise ApiError(400, f"Некорректные правила: {e}")
                 self._send_json(200, [r.to_dict() for r in rules])
+            elif route == "/admin/api/providers":
+                self._require_admin_auth()
+                registry = getattr(self.pipeline.forwarder, "registry", None)
+                if registry is None:
+                    raise ApiError(404, "Мультипровайдер не сконфигурирован")
+                body = self._read_json()
+                try:
+                    providers = [
+                        ProviderConfig.from_dict(p) for p in body.get("providers", [])
+                    ]
+                    registry.save(providers, str(body.get("default", "")))
+                except (ValueError, KeyError, TypeError) as e:
+                    raise ApiError(400, f"Некорректные провайдеры: {e}")
+                self._send_json(
+                    200,
+                    {
+                        "default": registry.default_name,
+                        "providers": [p.to_dict() for p in registry.list()],
+                    },
+                )
             else:
                 self._send_json(404, {"detail": "Не найдено"})
         except ApiError as e:
@@ -324,9 +358,13 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     {**msg, "content": result.masked_text}
                 )
 
+            # Э3: чувствительные запросы — на выделенный провайдер политики
+            provider = None
+            if total_counts and self.pipeline.policy.policy.sensitive_provider:
+                provider = self.pipeline.policy.policy.sensitive_provider
             try:
                 answer = self.pipeline.forwarder.chat(
-                    sanitized_messages, model=body.get("model")
+                    sanitized_messages, model=body.get("model"), provider=provider
                 )
             except Exception as e:
                 raise ApiError(502, f"Провайдер недоступен: {e}")

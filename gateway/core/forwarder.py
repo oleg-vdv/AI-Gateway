@@ -29,11 +29,16 @@ class Forwarder:
     def provider_name(self) -> str:
         return self._settings.provider_name
 
-    def complete(self, sanitized_text: str) -> str:
+    def complete(self, sanitized_text: str, provider: str | None = None) -> str:
         """Отправить обезличенный текст провайдеру, вернуть текст ответа."""
         return self.chat([{"role": "user", "content": sanitized_text}])
 
-    def chat(self, messages: list[dict], model: str | None = None) -> str:
+    def chat(
+        self,
+        messages: list[dict],
+        model: str | None = None,
+        provider: str | None = None,  # совместимость с MultiForwarder (Э3)
+    ) -> str:
         s = self._settings
         if not s.provider_api_key:
             raise ProviderError(
