@@ -17,6 +17,7 @@ from gateway.models import CheckRequest, CheckResponse, Verdict
 
 from .audit import AuditLog
 from .detectors import detect_all
+from .detectors.custom import CustomRuleRegistry
 from .forwarder import Forwarder, ProviderError
 from .mapping_store import MappingStore
 from .policy import PolicyEngine
@@ -33,12 +34,14 @@ class Pipeline:
         forwarder: Forwarder,
         audit: AuditLog,
         fail_closed: bool = True,
+        custom_rules: CustomRuleRegistry | None = None,
     ):
         self.policy = policy_engine
         self.store = mapping_store
         self.forwarder = forwarder
         self.audit = audit
         self.fail_closed = fail_closed
+        self.custom_rules = custom_rules
 
     def sanitize(self, req: CheckRequest) -> CheckResponse:
         """Этапы Detect -> Policy -> Tokenize (без форварда).
@@ -49,7 +52,8 @@ class Pipeline:
         request_id = uuid.uuid4().hex
         session_id = req.session_id or request_id
         try:
-            detections = detect_all(req.text)
+            extra = [self.custom_rules.detect] if self.custom_rules else None
+            detections = detect_all(req.text, extra=extra)
             entity_counts: dict[str, int] = {}
             for det in detections:
                 key = det.entity_type.value

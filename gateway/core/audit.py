@@ -124,3 +124,94 @@ class AuditLog:
             "plaintext_leaks": 0,  # по построению: наружу уходит только обезличенный текст
             "chain_integrity": chain_ok,
         }
+
+    def detailed_report(self, since: float = 0.0, until: float | None = None) -> dict:
+        """Развёрнутый комплаенс-отчёт (Э2): разбивка по пользователям,
+        каналам и дням — для внутреннего комплаенса и проверок регулятора."""
+        import datetime
+
+        records = [
+            r
+            for r in self.read_all()
+            if r.ts >= since and (until is None or r.ts < until)
+        ]
+
+        def _bucket() -> dict:
+            return {"requests": 0, "masked_entities": 0, "blocked": 0, "fail_closed": 0}
+
+        def _account(bucket: dict, r: AuditRecord) -> None:
+            bucket["requests"] += 1
+            if r.verdict == Verdict.MASKED.value:
+                bucket["masked_entities"] += sum(r.entity_counts.values())
+            elif r.verdict == Verdict.BLOCKED.value:
+                bucket["blocked"] += 1
+            elif r.verdict == Verdict.FAIL_CLOSED.value:
+                bucket["fail_closed"] += 1
+
+        by_user: dict[str, dict] = {}
+        by_channel: dict[str, dict] = {}
+        by_day: dict[str, dict] = {}
+        for r in records:
+            day = datetime.datetime.fromtimestamp(
+                r.ts, tz=datetime.timezone.utc
+            ).strftime("%Y-%m-%d")
+            for key, table in ((r.user, by_user), (r.channel, by_channel), (day, by_day)):
+                _account(table.setdefault(key, _bucket()), r)
+
+        summary = self.compliance_report(since=since)
+        if until is not None:
+            summary = {
+                **summary,
+                "period_end": until,
+                "total_requests": len(records),
+            }
+        return {
+            "summary": summary,
+            "by_user": by_user,
+            "by_channel": by_channel,
+            "by_day": dict(sorted(by_day.items())),
+        }
+
+    def export_csv(self, since: float = 0.0) -> str:
+        """Экспорт журнала в CSV (без значений — только типы/счётчики)."""
+        import csv
+        import io
+
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(
+            [
+                "ts_iso",
+                "user",
+                "channel",
+                "provider",
+                "verdict",
+                "entity_counts",
+                "policy_actions",
+                "cross_border_basis",
+                "request_id",
+                "hash",
+            ]
+        )
+        import datetime
+
+        for r in self.read_all():
+            if r.ts < since:
+                continue
+            writer.writerow(
+                [
+                    datetime.datetime.fromtimestamp(
+                        r.ts, tz=datetime.timezone.utc
+                    ).isoformat(),
+                    r.user,
+                    r.channel,
+                    r.provider,
+                    r.verdict,
+                    json.dumps(r.entity_counts, ensure_ascii=False, sort_keys=True),
+                    json.dumps(r.policy_actions, ensure_ascii=False, sort_keys=True),
+                    r.cross_border_basis or "",
+                    r.request_id,
+                    r.hash,
+                ]
+            )
+        return buf.getvalue()

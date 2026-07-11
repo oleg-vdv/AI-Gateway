@@ -1,0 +1,62 @@
+#!/usr/bin/env python3
+"""Git pre-commit hook (Э2): локальный скан staged-изменений на секреты.
+
+Работает полностью офлайн (детекторы ядра AI-Gate, без сетевых вызовов) —
+ловит API-ключи/.env/приватные ключи до того, как они попадут в историю.
+
+Установка (из корня репозитория, где доступен пакет gateway):
+    cp integrations/git/pre-commit .git/hooks/pre-commit
+    chmod +x .git/hooks/pre-commit
+Либо укажите AIGATE_HOME на каталог с установленным AI-Gate.
+
+Пропустить проверку разово: git commit --no-verify (фиксируется в истории команд).
+"""
+
+import os
+import subprocess
+import sys
+
+AIGATE_HOME = os.environ.get("AIGATE_HOME", "")
+if AIGATE_HOME:
+    sys.path.insert(0, AIGATE_HOME)
+sys.path.insert(0, os.getcwd())
+
+try:
+    from gateway.core.detectors.secrets import detect_secrets
+except ImportError:
+    print("aigate pre-commit: пакет gateway не найден (задайте AIGATE_HOME), пропуск")
+    sys.exit(0)
+
+
+def staged_diff() -> str:
+    out = subprocess.run(
+        ["git", "diff", "--cached", "--unified=0", "--no-color"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    # только добавленные строки
+    return "\n".join(
+        line[1:]
+        for line in out.stdout.splitlines()
+        if line.startswith("+") and not line.startswith("+++")
+    )
+
+
+def main() -> int:
+    added = staged_diff()
+    if not added.strip():
+        return 0
+    detections = detect_secrets(added)
+    if not detections:
+        return 0
+    print("aigate pre-commit: в staged-изменениях найдены секреты:")
+    for d in detections:
+        preview = d.value[:6] + "…" if len(d.value) > 6 else d.value
+        print(f"  - {d.detector}: {preview}")
+    print("Коммит остановлен. Уберите секреты (или git commit --no-verify).")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

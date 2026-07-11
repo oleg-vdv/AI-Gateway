@@ -20,6 +20,7 @@ from __future__ import annotations
 import hmac
 import json
 import logging
+import re
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -28,7 +29,7 @@ from pathlib import Path
 from gateway import __version__
 from gateway.config import Settings
 from gateway.core.pipeline import Pipeline
-from gateway.models import Channel, CheckRequest, Policy, Verdict
+from gateway.models import Channel, CheckRequest, DetectorRule, Policy, Verdict
 
 logger = logging.getLogger("aigate.server")
 
@@ -157,6 +158,35 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 self._require_admin_auth()
                 since = float(self._query().get("since", "0"))
                 self._send_json(200, self.pipeline.audit.compliance_report(since))
+            elif route == "/admin/api/report/detailed":
+                self._require_admin_auth()
+                q = self._query()
+                until = float(q["until"]) if "until" in q else None
+                self._send_json(
+                    200,
+                    self.pipeline.audit.detailed_report(
+                        since=float(q.get("since", "0")), until=until
+                    ),
+                )
+            elif route == "/admin/api/report.csv":
+                self._require_admin_auth()
+                since = float(self._query().get("since", "0"))
+                csv_body = self.pipeline.audit.export_csv(since=since).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/csv; charset=utf-8")
+                self.send_header(
+                    "Content-Disposition", 'attachment; filename="aigate-audit.csv"'
+                )
+                self.send_header("Content-Length", str(len(csv_body)))
+                self.end_headers()
+                self.wfile.write(csv_body)
+            elif route == "/admin/api/detector-rules":
+                self._require_admin_auth()
+                if self.pipeline.custom_rules is None:
+                    raise ApiError(404, "Настраиваемые правила не сконфигурированы")
+                self._send_json(
+                    200, [r.to_dict() for r in self.pipeline.custom_rules.rules]
+                )
             elif route == "/admin/api/config":
                 self._require_admin_auth()
                 s = self.settings
@@ -213,7 +243,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
 
     def do_PUT(self):
         try:
-            if self._route() == "/admin/api/policy":
+            route = self._route()
+            if route == "/admin/api/policy":
                 self._require_admin_auth()
                 try:
                     policy = Policy.from_dict(self._read_json())
@@ -221,6 +252,19 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     raise ApiError(400, f"Некорректная политика: {e}")
                 self.pipeline.policy.save(policy)
                 self._send_json(200, policy.to_dict())
+            elif route == "/admin/api/detector-rules":
+                self._require_admin_auth()
+                if self.pipeline.custom_rules is None:
+                    raise ApiError(404, "Настраиваемые правила не сконфигурированы")
+                body = self._read_json()
+                if not isinstance(body, list):
+                    raise ApiError(400, "Ожидается массив правил")
+                try:
+                    rules = [DetectorRule.from_dict(r) for r in body]
+                    self.pipeline.custom_rules.save(rules)
+                except (ValueError, KeyError, TypeError, re.error) as e:
+                    raise ApiError(400, f"Некорректные правила: {e}")
+                self._send_json(200, [r.to_dict() for r in rules])
             else:
                 self._send_json(404, {"detail": "Не найдено"})
         except ApiError as e:

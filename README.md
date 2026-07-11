@@ -37,7 +37,12 @@ on-prem, data residency в РК, готовые политики под Зако
   карты — по алгоритму Луна. Секреты — регэкспы известных форматов
   (OpenAI/Anthropic/AWS/GitHub/Slack/JWT/PEM/.env) + энтропия Шеннона.
 - **ФИО с казахской спецификой**: суффиксы `-улы/-ұлы/-кызы/-қызы/-тегі`,
-  русские отчества, инициалы.
+  русские отчества, инициалы, контекстные двухсловные имена («клиент: Айдос
+  Смагулов»).
+- **Суммы/балансы и коммерческая тайна (Э2)**: суммы с валютой (тг/₸/KZT/₽/$/€)
+  и после контекстных слов («баланс:», «сумма —»); настраиваемые правила
+  организации (маркеры «коммерческая тайна»/ДСП, кастомные регэкспы) —
+  управление через admin API без перезапуска.
 - **Fail-closed по умолчанию**: любая ошибка детекта/парсинга → блокировка,
   а не пропуск. Цена ложного пропуска (утечка + штраф до 2000 МРП по ст. 79
   КоАП) выше цены ложной блокировки.
@@ -134,14 +139,23 @@ curl -s localhost:8080/admin/api/report -H 'Authorization: Bearer <токен>'
 # {"total_requests": 152, "masked_entities": 340, "blocked": 12,
 #  "plaintext_leaks": 0, "chain_integrity": true, ...}
 
+# развёрнутый отчёт: по пользователям, каналам, дням (Э2)
+curl -s 'localhost:8080/admin/api/report/detailed?since=1750000000' -H 'Authorization: Bearer <токен>'
+
+# CSV-экспорт журнала для регулятора (без значений ПДн)
+curl -s localhost:8080/admin/api/report.csv -H 'Authorization: Bearer <токен>' -o audit.csv
+
 curl -s localhost:8080/admin/api/audit/verify -H 'Authorization: Bearer <токен>'
 # {"chain_integrity": true, "broken_at_index": -1}
+
+# настраиваемые правила детекта (маркеры коммерческой тайны и т.п.)
+curl -s localhost:8080/admin/api/detector-rules -H 'Authorization: Bearer <токен>'
 ```
 
 ## Тесты
 
 ```bash
-python -m unittest discover -s tests -t .   # 79 тестов, без внешних зависимостей
+python -m unittest discover -s tests -t .   # 104 теста, без внешних зависимостей
 ```
 
 Тесты покрывают критерии приёмки MVP (раздел 11 ТЗ): наружу не уходит ни одно
@@ -169,7 +183,8 @@ gateway/
   static/index.html       # админ-консоль
 extension/                # браузерное расширение (Manifest V3, Chrome/Edge/Firefox)
 agent/                    # endpoint-агент: clipboard + локальные приложения (Э1.5)
-tests/                    # unittest, 79 тестов
+integrations/             # IDE-hook Claude Code, git pre-commit, 1С (Э2)
+tests/                    # unittest, 104 теста
 docs/                     # ТЗ, инструкции по каналам
 ```
 
@@ -177,8 +192,11 @@ docs/                     # ТЗ, инструкции по каналам
 
 - **Э1.5** ✅: endpoint-агент (clipboard, Cursor/Claude Desktop) —
   см. [docs/endpoint-agent.md](docs/endpoint-agent.md).
-- **Э2**: коннекторы 1С/Bitrix24, IDE-hooks, суммы/балансы, расширение
-  казахской специфики (NER), комплаенс-отчёты для регулятора.
+- **Э2** (частично ✅): суммы/балансы, настраиваемые правила (коммерческая
+  тайна, кастомные регэкспы), контекстные ФИО, IDE-hook Claude Code,
+  git pre-commit, коннектор 1С, развёрнутые отчёты + CSV —
+  см. [integrations/](integrations/README.md). Осталось: модуль Bitrix24,
+  NER-модель для ФИО.
 - **Э3**: мультипровайдер, локальная LLM «из коробки», MCP/агентный слой,
   ИИ-детект контекстных утечек.
 

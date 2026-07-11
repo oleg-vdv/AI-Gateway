@@ -67,6 +67,9 @@ class Settings:
     # --- Аудит и политика (внутри периметра) ---
     audit_log_path: Path = field(default_factory=lambda: Path("data/audit.log"))
     policy_path: Path = field(default_factory=lambda: Path("data/policy.json"))
+    detector_rules_path: Path = field(
+        default_factory=lambda: Path("data/detector_rules.json")
+    )
 
     # --- Fail-closed (глобальный предохранитель; выключать только на стенде) ---
     fail_closed: bool = True
@@ -88,5 +91,8 @@ class Settings:
             mapping_encryption_key=_env("MAPPING_ENCRYPTION_KEY", ""),
             audit_log_path=Path(_env("AUDIT_LOG_PATH", "data/audit.log")),
             policy_path=Path(_env("POLICY_PATH", "data/policy.json")),
+            detector_rules_path=Path(
+                _env("DETECTOR_RULES_PATH", "data/detector_rules.json")
+            ),
             fail_closed=_env_bool("FAIL_CLOSED", True),
         )

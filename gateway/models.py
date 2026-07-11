@@ -23,6 +23,7 @@ class EntityType(str, enum.Enum):
     CARD = "CARD"        # PAN банковской карты
     SECRET = "SECRET"    # API-ключи, токены, приватные ключи, .env
     AMOUNT = "AMOUNT"    # суммы/балансы (по контексту, настраивается)
+    CONFIDENTIAL = "CONFIDENTIAL"  # маркеры коммерческой тайны / кастомные правила (Э2)
 
 
 class Action(str, enum.Enum):
@@ -171,6 +172,40 @@ class Policy:
                 for g, m in d.get("group_overrides", {}).items()
             },
             fail_closed=d.get("fail_closed", True),
+        )
+
+
+@dataclass
+class DetectorRule:
+    """Настраиваемое правило детекта (Э2): регэксп и/или ключевые слова.
+
+    Используется для маркеров коммерческой тайны и корпоративной
+    специфики (внутренние кодовые имена, номера договоров и т.п.).
+    """
+
+    name: str
+    entity_type: EntityType = EntityType.CONFIDENTIAL
+    pattern: str = ""                       # regex (опционально)
+    keywords: list[str] = field(default_factory=list)  # фразы, без учёта регистра
+    enabled: bool = True
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "entity_type": self.entity_type.value,
+            "pattern": self.pattern,
+            "keywords": self.keywords,
+            "enabled": self.enabled,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "DetectorRule":
+        return cls(
+            name=str(d["name"]),
+            entity_type=EntityType(d.get("entity_type", "CONFIDENTIAL")),
+            pattern=str(d.get("pattern", "")),
+            keywords=[str(k) for k in d.get("keywords", [])],
+            enabled=bool(d.get("enabled", True)),
         )
 
 

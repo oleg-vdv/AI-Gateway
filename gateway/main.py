@@ -7,6 +7,7 @@ import logging
 from gateway import __version__
 from gateway.config import Settings
 from gateway.core.audit import AuditLog
+from gateway.core.detectors.custom import CustomRuleRegistry
 from gateway.core.forwarder import Forwarder
 from gateway.core.mapping_store import MappingStore
 from gateway.core.pipeline import Pipeline
@@ -29,6 +30,7 @@ def build_pipeline(settings: Settings) -> Pipeline:
         forwarder=Forwarder(settings),
         audit=AuditLog(settings.audit_log_path),
         fail_closed=settings.fail_closed,
+        custom_rules=CustomRuleRegistry(settings.detector_rules_path),
     )
 
 

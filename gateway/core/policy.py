@@ -28,6 +28,9 @@ def default_policy() -> Policy:
             # промпте почти всегда значит, что ключ уже надо ротировать.
             PolicyRule(entity_type=EntityType.SECRET, action=Action.BLOCK),
             PolicyRule(entity_type=EntityType.AMOUNT, action=Action.MASK),
+            # Маркеры коммерческой тайны: маскирование бессмысленно
+            # (гриф — не значение), документ с грифом не должен уходить.
+            PolicyRule(entity_type=EntityType.CONFIDENTIAL, action=Action.BLOCK),
         ],
         fail_closed=True,
     )
