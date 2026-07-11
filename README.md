@@ -91,6 +91,21 @@ resp = client.chat.completions.create(
    и только обезличенный текст попадает в веб-LLM; плейсхолдеры в ответе
    ассистента подменяются обратно на значения.
 
+### Канал «Endpoint» (буфер обмена, Cursor / Claude Desktop) — Э1.5
+
+Агент на рабочей станции перехватывает чувствительные данные в буфере
+обмена до вставки в локальные LLM-приложения (то, что не видят ни браузер,
+ни сетевой периметр) и детокенизирует скопированные ответы:
+
+```bash
+export AIGATE_AGENT_GATEWAY_URL=http://aigate.internal:8080
+export AIGATE_AGENT_CHANNEL_KEY=<ключ канала>
+python -m agent.main
+```
+
+Fail-closed: при недоступном шлюзе буфер с ПДн/секретами очищается.
+Подробнее: [docs/endpoint-agent.md](docs/endpoint-agent.md).
+
 ### Прямой API
 
 ```bash
@@ -126,7 +141,7 @@ curl -s localhost:8080/admin/api/audit/verify -H 'Authorization: Bearer <ток�
 ## Тесты
 
 ```bash
-python -m unittest discover -s tests -t .   # 70 тестов, без внешних зависимостей
+python -m unittest discover -s tests -t .   # 79 тестов, без внешних зависимостей
 ```
 
 Тесты покрывают критерии приёмки MVP (раздел 11 ТЗ): наружу не уходит ни одно
@@ -153,13 +168,15 @@ gateway/
     crypto.py             # шифрование Mapping Store (stdlib, PRF-CTR + HMAC)
   static/index.html       # админ-консоль
 extension/                # браузерное расширение (Manifest V3, Chrome/Edge/Firefox)
-tests/                    # unittest, 70 тестов
-docs/                     # ТЗ
+agent/                    # endpoint-агент: clipboard + локальные приложения (Э1.5)
+tests/                    # unittest, 79 тестов
+docs/                     # ТЗ, инструкции по каналам
 ```
 
 ## Дорожная карта (по ТЗ)
 
-- **Э1.5**: endpoint-агент (clipboard, Cursor/Claude Desktop).
+- **Э1.5** ✅: endpoint-агент (clipboard, Cursor/Claude Desktop) —
+  см. [docs/endpoint-agent.md](docs/endpoint-agent.md).
 - **Э2**: коннекторы 1С/Bitrix24, IDE-hooks, суммы/балансы, расширение
   казахской специфики (NER), комплаенс-отчёты для регулятора.
 - **Э3**: мультипровайдер, локальная LLM «из коробки», MCP/агентный слой,

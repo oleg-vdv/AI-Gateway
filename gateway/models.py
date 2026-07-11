@@ -32,9 +32,10 @@ class Action(str, enum.Enum):
 
 
 class Channel(str, enum.Enum):
-    BROWSER = "browser"   # браузерное расширение
-    EGRESS = "egress"     # reverse-proxy / API middleware
-    API = "api"           # прямой вызов /v1/check
+    BROWSER = "browser"    # браузерное расширение
+    EGRESS = "egress"      # reverse-proxy / API middleware
+    API = "api"            # прямой вызов /v1/check
+    ENDPOINT = "endpoint"  # endpoint-агент: clipboard, локальные приложения (Э1.5)
 
 
 class Verdict(str, enum.Enum):
