@@ -1,0 +1,9 @@
+[project]
+name = "ai-gate"
+version = "0.1.0"
+description = "Универсальный AI-Gateway / GenAI-DLP: комплаенс-шлюз для безопасного использования LLM"
+requires-python = ">=3.11"
+dependencies = []  # ядро работает на чистой stdlib (важно для air-gapped)
+
+[tool.setuptools.packages.find]
+include = ["gateway*"]

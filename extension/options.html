@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>AI-Gate DLP — настройки</title>
+<style>
+  body { font: 14px system-ui; max-width: 480px; margin: 2rem auto; padding: 0 1rem; }
+  label { display:block; margin-top: 1rem; font-weight: 600; }
+  input { width: 100%; padding: .5rem; margin-top: .25rem; box-sizing: border-box; }
+  button { margin-top: 1.25rem; padding: .5rem 1.25rem; }
+  .hint { color: #64748b; font-size: .8rem; }
+  #status { margin-left: .75rem; color: #16a34a; }
+</style>
+</head>
+<body>
+  <h2>AI-Gate DLP — настройки канала</h2>
+  <label>Адрес шлюза
+    <input id="gatewayUrl" placeholder="http://localhost:8080">
+  </label>
+  <p class="hint">On-prem адрес корпоративного шлюза AI-Gate. В корпоративном
+  развёртывании задаётся централизованно через GPO/MDM managed storage.</p>
+  <label>Ключ канала (X-AIGate-Key)
+    <input id="channelKey" type="password" placeholder="ключ, выданный администратором">
+  </label>
+  <label>Идентификатор пользователя (для аудита)
+    <input id="user" placeholder="ivanov.ii">
+  </label>
+  <button id="save">Сохранить</button><span id="status"></span>
+  <script src="options.js"></script>
+</body>
+</html>

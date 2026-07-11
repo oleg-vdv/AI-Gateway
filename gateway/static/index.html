@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI-Gate — Control Plane</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #fff; --text: #1a202c; --muted: #64748b;
+    --accent: #2563eb; --ok: #16a34a; --warn: #d97706; --bad: #dc2626;
+    --border: #e2e8f0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0f172a; --card:#1e293b; --text:#e2e8f0; --muted:#94a3b8; --border:#334155; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+         background: var(--bg); color: var(--text); }
+  header { padding: 1rem 1.5rem; border-bottom: 1px solid var(--border);
+           display:flex; align-items:center; gap:.75rem; background: var(--card); }
+  header h1 { font-size: 1.1rem; margin:0; }
+  header .tag { font-size:.75rem; color: var(--muted); border:1px solid var(--border);
+                border-radius: 999px; padding:.15rem .6rem; }
+  main { max-width: 1100px; margin: 1.5rem auto; padding: 0 1rem;
+         display:grid; gap:1rem; }
+  .cards { display:grid; grid-template-columns: repeat(auto-fit, minmax(160px,1fr)); gap:1rem; }
+  .card { background: var(--card); border:1px solid var(--border);
+          border-radius: 12px; padding:1rem 1.25rem; }
+  .card .num { font-size: 1.8rem; font-weight: 700; }
+  .card .lbl { color: var(--muted); font-size:.8rem; margin-top:.25rem; }
+  h2 { font-size: 1rem; margin: .5rem 0; }
+  table { width:100%; border-collapse: collapse; font-size:.85rem; }
+  th, td { text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--border); }
+  th { color: var(--muted); font-weight:600; }
+  .scroll { overflow-x:auto; }
+  select, button { font: inherit; padding:.35rem .6rem; border-radius:8px;
+                   border:1px solid var(--border); background: var(--card); color: var(--text); }
+  button.primary { background: var(--accent); border-color: var(--accent); color:#fff; cursor:pointer; }
+  .verdict-masked { color: var(--accent); } .verdict-blocked { color: var(--bad); }
+  .verdict-clean { color: var(--ok); } .verdict-fail_closed { color: var(--warn); }
+  .verdict-allowed { color: var(--warn); font-weight:600; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); }
+  #save-status { margin-left:.5rem; color: var(--muted); font-size:.85rem; }
+</style>
+</head>
+<body>
+<header>
+  <h1>AI-Gate · Control Plane</h1>
+  <span class="tag">on-prem</span>
+  <span class="tag" id="chain-tag">аудит: …</span>
+</header>
+<main>
+  <section class="cards" id="stats"></section>
+
+  <section class="card">
+    <h2>Политика (mask / block / allow)</h2>
+    <div class="scroll"><table id="policy-table">
+      <thead><tr><th>Тип сущности</th><th>Действие</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+    <p><button class="primary" id="save-policy">Сохранить политику</button><span id="save-status"></span></p>
+    <p style="color:var(--muted);font-size:.8rem">
+      Действие «allow» — трансграничная передача ПДн (ст. 16 Закона № 94-V):
+      применяется только при зафиксированном основании и логируется отдельно.
+    </p>
+  </section>
+
+  <section class="card">
+    <h2>Журнал аудита (без значений — только типы и счётчики)</h2>
+    <div class="scroll"><table id="audit-table">
+      <thead><tr><th>Время</th><th>Пользователь</th><th>Канал</th><th>Вердикт</th><th>Сущности</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+  </section>
+</main>
+<script>
+const api = (p) => fetch('/admin/api' + p, { headers: authHeaders() });
+function authHeaders() {
+  const t = localStorage.getItem('aigate_admin_token');
+  return t ? { 'Authorization': 'Bearer ' + t } : {};
+}
+
+async function loadReport() {
+  const r = await (await api('/report')).json();
+  const cards = [
+    [r.total_requests, 'запросов'],
+    [r.masked_entities, 'ПДн замаскировано'],
+    [r.blocked, 'блокировок'],
+    [r.fail_closed, 'fail-closed'],
+    [r.cross_border_allowed, 'трансграничных allow'],
+    [r.plaintext_leaks, 'утечек в открытом виде'],
+  ];
+  document.getElementById('stats').innerHTML = cards.map(
+    ([n, l]) => `<div class="card"><div class="num">${n}</div><div class="lbl">${l}</div></div>`
+  ).join('');
+  const tag = document.getElementById('chain-tag');
+  tag.textContent = 'аудит: ' + (r.chain_integrity ? 'цепочка целая ✓' : 'ЦЕПОЧКА ПОВРЕЖДЕНА ✗');
+  tag.className = 'tag ' + (r.chain_integrity ? 'ok' : 'bad');
+}
+
+let currentPolicy = null;
+async function loadPolicy() {
+  currentPolicy = await (await api('/policy')).json();
+  const tbody = document.querySelector('#policy-table tbody');
+  tbody.innerHTML = currentPolicy.rules.map((rule, i) => `
+    <tr><td>${rule.entity_type}</td><td>
+      <select data-i="${i}">
+        ${['mask','block','allow'].map(a =>
+          `<option value="${a}" ${rule.action===a?'selected':''}>${a}</option>`).join('')}
+      </select>
+    </td></tr>`).join('');
+}
+
+document.getElementById('save-policy').addEventListener('click', async () => {
+  document.querySelectorAll('#policy-table select').forEach(sel => {
+    currentPolicy.rules[+sel.dataset.i].action = sel.value;
+  });
+  const resp = await fetch('/admin/api/policy', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(currentPolicy),
+  });
+  document.getElementById('save-status').textContent =
+    resp.ok ? 'Сохранено ✓' : 'Ошибка: ' + resp.status;
+});
+
+async function loadAudit() {
+  const records = await (await api('/audit?limit=50')).json();
+  const tbody = document.querySelector('#audit-table tbody');
+  tbody.innerHTML = records.reverse().map(r => `
+    <tr>
+      <td>${new Date(r.ts * 1000).toLocaleString('ru-RU')}</td>
+      <td>${r.user}</td><td>${r.channel}</td>
+      <td class="verdict-${r.verdict}">${r.verdict}</td>
+      <td>${Object.entries(r.entity_counts).map(([t,c]) => `${t}×${c}`).join(', ') || '—'}</td>
+    </tr>`).join('');
+}
+
+async function refresh() {
+  try { await Promise.all([loadReport(), loadPolicy(), loadAudit()]); }
+  catch (e) {
+    document.getElementById('stats').innerHTML =
+      '<div class="card"><div class="lbl">Нет доступа: задайте токен — localStorage.setItem("aigate_admin_token", "...")</div></div>';
+  }
+}
+refresh();
+setInterval(() => { loadReport(); loadAudit(); }, 15000);
+</script>
+</body>
+</html>

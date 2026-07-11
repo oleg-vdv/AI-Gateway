@@ -1,0 +1,16 @@
+# On-prem развёртывание AI-Gate (раздел 9 ТЗ).
+# Весь чувствительный контур (Mapping Store, аудит, консоль) — внутри периметра;
+# единственное исходящее соединение — вызов LLM-провайдера.
+services:
+  aigate:
+    build: .
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    volumes:
+      - aigate-data:/app/data   # append-only аудит и политика
+    restart: unless-stopped
+
+volumes:
+  aigate-data:
