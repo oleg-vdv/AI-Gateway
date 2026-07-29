@@ -3,7 +3,7 @@
 FROM python:3.12-slim
 
 WORKDIR /app
-COPY gateway/ gateway/
+COPY gateway/ gateway/ 
 
 # непривилегированный пользователь; данные (аудит/политика) — в volume
 RUN useradd -m aigate && mkdir -p /app/data && chown -R aigate:aigate /app
