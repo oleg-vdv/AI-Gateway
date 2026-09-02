@@ -6,7 +6,7 @@
 ![Tests](https://img.shields.io/badge/tests-137-success.svg)
 
 *[Русская версия](docs/README.ru.md)*
-
+ 
 **Let people use LLMs without leaking data.** AI-Gate sits between your users
 and external LLMs (ChatGPT / Claude / Gemini and any OpenAI-compatible API),
 detects sensitive data in the prompt — national IDs, names, bank accounts,
