@@ -1,6 +1,8 @@
 # AI-Gate — LLM compliance gateway / GenAI-DLP
 
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![License: AGPL v3](https://img.shields.io/badge/license-AGPL--3.0-1F5C4E)](LICENSE)
+[![Commercial licence](https://img.shields.io/badge/commercial%20licence-available-8A6100)](COMMERCIAL.md)
+
 ![Python 3.11+](https://img.shields.io/badge/Python-3.11+-3776AB.svg)
 ![Zero dependencies](https://img.shields.io/badge/dependencies-stdlib_only-9ece6a.svg)
 ![Tests](https://img.shields.io/badge/tests-137-success.svg)
@@ -276,4 +278,17 @@ criticism it gets:
 
 ## License
 
-Apache 2.0 — see [LICENSE](LICENSE).
+**AGPL-3.0-or-later** — see [LICENSE](LICENSE).
+
+In practice that means:
+
+- Run it inside your own company, change it, study it — freely, at no cost.
+- **Offer it to third parties over a network** — as a hosted gateway, as part of
+  a SaaS product, as a managed service — and the AGPL obliges you to release the
+  source of that service under the same terms.
+- If you cannot or will not open your source, a **commercial licence** removes
+  that obligation: see [COMMERCIAL.md](COMMERCIAL.md).
+
+Versions up to and including **0.1.0 remain under Apache-2.0**; nothing published
+under that licence is taken back. The change applies from 0.2.0 onward, and the
+copyright is held by a single author, so no contributor's rights are affected.

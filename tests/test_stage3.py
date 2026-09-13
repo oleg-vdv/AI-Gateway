@@ -88,10 +88,14 @@ class TestProviderRegistry(unittest.TestCase):
         with self.assertRaises(ProviderError):
             reg.get("local")
 
+    @unittest.skipIf(os.name == "nt",
+                     "права POSIX в Windows не выставляются; проверка имеет "
+                     "смысл там, где гейтвей работает в бою — на Linux")
     def test_file_permissions(self):
         reg = _registry(self.tmp)
         mode = (self.tmp / "providers.json").stat().st_mode & 0o777
-        self.assertEqual(mode, 0o600)
+        self.assertEqual(mode, 0o600, "файл с ключами провайдеров не должен "
+                                      "читаться посторонними")
 
 
 class TestRequestFormats(unittest.TestCase):

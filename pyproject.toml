@@ -1,9 +1,9 @@
 [project]
 name = "ai-gate"
-version = "0.1.0"
+version = "0.2.0"
 description = "LLM compliance gateway / GenAI-DLP: reversibly masks sensitive data in prompts before they reach external LLMs"
 requires-python = ">=3.11"
-license = "Apache-2.0"
+license = "AGPL-3.0-or-later"
 license-files = ["LICENSE"]
 dependencies = []  # ядро работает на чистой stdlib (важно для air-gapped)
 
