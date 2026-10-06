@@ -1,13 +1,16 @@
 {
   "manifest_version": 3,
   "name": "AI-Gate DLP",
-  "version": "0.1.0",
-  "description": "Комплаенс-шлюз: маскирует ИИН/БИН/ФИО/счета/секреты перед отправкой в ChatGPT/Claude/Gemini (Закон РК № 94-V).",
+  "version": "0.2.3",
+  "description": "Маскирует ИИН/БИН, ФИО, счета и секреты перед отправкой в ChatGPT, Claude и Gemini (Закон РК № 94-V).",
   "permissions": ["storage"],
-  "host_permissions": ["http://localhost/*", "http://127.0.0.1/*", "https://*/*"],
+  "host_permissions": ["http://localhost/*", "http://127.0.0.1/*"],
+  "optional_host_permissions": ["https://*/*", "http://*/*"],
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "background.js",
+    "scripts": ["background.js"]
   },
+  "action": { "default_title": "AI-Gate DLP: настройки" },
   "content_scripts": [
     {
       "matches": [
@@ -22,9 +25,6 @@
   ],
   "options_page": "options.html",
   "browser_specific_settings": {
-    "gecko": {
-      "id": "aigate-dlp@example.kz",
-      "strict_min_version": "115.0"
-    }
+    "gecko": { "id": "aigate-dlp@example.kz", "strict_min_version": "121.0" }
   }
 }

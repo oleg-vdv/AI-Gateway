@@ -4,28 +4,43 @@
 <meta charset="utf-8">
 <title>AI-Gate DLP — настройки</title>
 <style>
-  body { font: 14px system-ui; max-width: 480px; margin: 2rem auto; padding: 0 1rem; }
-  label { display:block; margin-top: 1rem; font-weight: 600; }
-  input { width: 100%; padding: .5rem; margin-top: .25rem; box-sizing: border-box; }
-  button { margin-top: 1.25rem; padding: .5rem 1.25rem; }
-  .hint { color: #64748b; font-size: .8rem; }
-  #status { margin-left: .75rem; color: #16a34a; }
+  :root { --ink:#1e293b; --muted:#64748b; --line:#cbd5e1; --ok:#15803d; --err:#b91c1c; --accent:#1F5C4E; }
+  body { font: 15px/1.5 system-ui, sans-serif; color: var(--ink); max-width: 34rem; margin: 2.5rem auto; padding: 0 1.25rem; }
+  h1 { font-size: 1.35rem; margin: 0 0 .25rem; }
+  .lead { color: var(--muted); margin: 0 0 1.5rem; }
+  label { display: block; margin-top: 1.1rem; font-weight: 600; }
+  input { width: 100%; padding: .55rem .65rem; margin-top: .3rem; box-sizing: border-box;
+          border: 1px solid var(--line); border-radius: 6px; font: inherit; }
+  input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .hint { color: var(--muted); font-size: .85rem; margin: .3rem 0 0; }
+  .row { display: flex; gap: .75rem; align-items: center; margin-top: 1.5rem; flex-wrap: wrap; }
+  button { padding: .55rem 1.1rem; border-radius: 6px; font: inherit; cursor: pointer;
+           border: 1px solid var(--accent); background: var(--accent); color: #fff; }
+  button.secondary { background: #fff; color: var(--accent); }
+  #status { font-size: .9rem; }
+  #status.ok { color: var(--ok); } #status.err { color: var(--err); }
 </style>
 </head>
 <body>
-  <h2>AI-Gate DLP — настройки канала</h2>
-  <label>Адрес шлюза
-    <input id="gatewayUrl" placeholder="http://localhost:8080">
-  </label>
-  <p class="hint">On-prem адрес корпоративного шлюза AI-Gate. В корпоративном
-  развёртывании задаётся централизованно через GPO/MDM managed storage.</p>
-  <label>Ключ канала (X-AIGate-Key)
-    <input id="channelKey" type="password" placeholder="ключ, выданный администратором">
-  </label>
-  <label>Идентификатор пользователя (для аудита)
-    <input id="user" placeholder="ivanov.ii">
-  </label>
-  <button id="save">Сохранить</button><span id="status"></span>
+  <h1>AI-Gate DLP</h1>
+  <p class="lead">Расширение отправляет текст запроса на ваш шлюз AI-Gate до того, как он уйдёт в ChatGPT, Claude или Gemini.</p>
+
+  <label for="gatewayUrl">Адрес шлюза</label>
+  <input id="gatewayUrl" placeholder="http://localhost:8080" autocomplete="off">
+  <p class="hint">Для шлюза не на этом компьютере браузер попросит разрешение на доступ к его адресу.</p>
+
+  <label for="channelKey">Ключ канала</label>
+  <input id="channelKey" type="password" placeholder="Выдаёт администратор шлюза" autocomplete="off">
+  <p class="hint">Пусто, если на шлюзе не задан AIGATE_CHANNEL_API_KEYS.</p>
+
+  <label for="user">Имя пользователя для журнала аудита</label>
+  <input id="user" placeholder="ivanov.ii" autocomplete="off">
+
+  <div class="row">
+    <button id="save">Сохранить</button>
+    <button id="test" class="secondary">Проверить подключение</button>
+    <span id="status" role="status"></span>
+  </div>
   <script src="options.js"></script>
 </body>
 </html>
