@@ -25,7 +25,7 @@ Prompt from your app:
     "Customer Yerzhan Nursultanuly, ID 900715300005, disputes a charge..."
 
 What actually leaves the network:
-    "Customer [PERSON_1], ID [NATIONAL_ID_1], disputes a charge..."
+    "Customer [PERSON_1], ID [IIN_1], disputes a charge..."
 
 What the app receives back:
     "...for Yerzhan Nursultanuly (ID 900715300005), the charge can be..."
@@ -53,7 +53,7 @@ Channels                        Core (shared pipeline)               Control Pla
 ## Key properties
 
 - **Reversible tokenization, not redaction.** `ID 900715300005` leaves as
-  `[NATIONAL_ID_1]` and comes back as `900715300005`. Users get a useful
+  `[IIN_1]` and comes back as `900715300005`. Users get a useful
   answer instead of a wall of `[REDACTED]`.
 - **Checksum-validated detection.** National IDs (Kazakhstan IIN/BIN) are
   validated with the official weighted algorithm rather than "any 12 digits",
@@ -116,7 +116,7 @@ resp = client.chat.completions.create(
     model="gpt-4o-mini",
     messages=[{"role": "user", "content": "Customer Yerzhan Nursultanuly, ID 900715300005..."}],
 )
-# what left the network: "Customer [PERSON_1], ID [NATIONAL_ID_1]..."
+# what left the network: "Customer [PERSON_1], ID [IIN_1]..."
 # what came back: real values restored
 ```
 
@@ -127,14 +127,47 @@ change rather than a redeployment.
 
 ### Channel 2 — Browser (ChatGPT / Claude / Gemini)
 
-1. `chrome://extensions` → Developer mode → Load unpacked → the `extension/`
-   directory (deploy via GPO/MDM for an organization).
-2. Set the gateway address and channel key in the extension settings.
-3. Text is intercepted **before** it reaches the site, masked by the gateway,
-   and only anonymized text enters the web LLM; placeholders in the
-   assistant's reply are substituted back as it renders.
+The extension intercepts a message **before** the site sends it, has the
+gateway mask it, sends only the anonymized text, and substitutes real values
+back into the assistant's reply on your screen. The web LLM never sees them.
 
-Manifest V3, works in Chrome, Edge and Firefox.
+**Install (2 minutes):**
+
+1. Start the gateway (see Quick start). For the browser channel set
+   `AIGATE_MAPPING_TTL_SECONDS=28800` in `.env`: the default 600 s is too short
+   for a chat, and after it expires old replies keep their placeholders.
+   No provider API key is needed — the browser channel only masks
+   (`dry_run`), it never forwards anything.
+2. `chrome://extensions` (or `edge://extensions`) → Developer mode →
+   Load unpacked → the `extension/` directory. For an organization, deploy
+   via GPO/MDM.
+3. Click the extension icon → **Check connection**. The badge shows `ON` when
+   the gateway answers and `!` when it does not.
+
+**Verify it actually works** — the reply you see is restored locally, so it
+does not prove anything by itself:
+
+1. Send `Customer Yerzhan Nursultanuly, IIN 900715300005, disputes a charge of
+   150000 tenge. Draft a short reply that mentions his name and IIN.`
+   A green notice lists what was masked; the reply shows the real values.
+2. Turn the extension **off** and reload the page. The conversation now shows
+   `[PERSON_1]`, `[IIN_1]`, `[AMOUNT_1]` — exactly what the LLM vendor stores.
+3. Stop the gateway and try to send again: the message is **not** sent
+   (fail-closed), a red notice explains why.
+
+**How it behaves:**
+
+- One gateway session per conversation, so the same person keeps the same
+  placeholder across messages and the model never confuses two people.
+- Fail-closed: if the gateway is down or returns `block`, nothing is sent.
+- Secrets (API keys, tokens) are blocked, not masked.
+- Placeholders are restored even when the site splits them across several
+  DOM nodes; real values are never written back into the message box.
+- Permissions are narrow: `localhost` only by default; a remote gateway's
+  address is requested at runtime when you set it.
+- Diagnostics: DevTools → Console, filter `AI-Gate` (no personal data is logged).
+
+Manifest V3, Chrome / Edge / Firefox 121+. Changes: [extension/CHANGELOG.md](extension/CHANGELOG.md).
 
 ### Channel 3 — Endpoint agent (clipboard, Cursor / Claude Desktop)
 
@@ -269,8 +302,14 @@ criticism it gets:
 
 - **Streaming responses through the egress proxy are not supported** —
   detokenization needs the complete response. An incremental detokenizer is planned.
-- **Name detection is pattern-based**: high recall on typical formats, but names
-  are the hard case in every language. An NER model is the next step.
+- **Name detection is pattern-based and has known gaps.** Names with a
+  patronymic ("Yerzhan Nursultanuly", "Sergey Petrovich") are caught; a name
+  without a patronymic ("Aigul Akhmetova") is not, and a surname *after* the
+  patronymic ("Sergey Petrovich Ivanov") currently leaks. Fixing this —
+  context rules first, then an optional NER model — is the top priority.
+- **The browser channel does not inspect uploaded files**, only typed text;
+  the extension warns when a file is attached. Web LLM sites change their
+  markup often, so interception may need updating after a site redesign.
 - **This reduces leakage risk; it does not by itself create legal compliance.**
   What it provides is the technical control and the evidence trail a compliance
   program needs underneath it. Enforcement practice around LLM cross-border
