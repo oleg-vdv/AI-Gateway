@@ -3,7 +3,8 @@
 // Перехват отправки в capture-фазе ДО того, как страница обработает Enter
 // или клик по кнопке. Текст уходит на шлюз (/v1/check, dry_run), поле ввода
 // заменяется обезличенным текстом, после чего отправка повторяется.
-// Ответ ассистента детокенизируется через /v1/restore прямо в DOM.
+// Метки в ответе расшифровываются через /v1/restore в панели расширения;
+// страница сайта не меняется (v0.3.2).
 //
 // Fail-closed: если шлюз недоступен или вернул block/fail_closed,
 // отправка НЕ происходит.
@@ -258,95 +259,160 @@
     }
   }, true);
 
-  // --- детокенизация ответов -------------------------------------------------------
-  // Наблюдатель работает всё время, пока открыта страница: сайты перерисовывают
-  // сообщения (React), и восстановленный текст может вернуться к токенам.
+  // --- расшифровка меток ---------------------------------------------------------
+  //
+  // v0.3.2: настоящие значения БОЛЬШЕ НЕ ВПИСЫВАЮТСЯ в страницу сайта.
+  // Раньше расширение заменяло [PERSON_1] на имя прямо в DOM ответа. ChatGPT
+  // хранит диалог и у себя в браузере и синхронизирует его, а редактируемые
+  // блоки ответа (карточка «Текст») воспринимают изменение DOM как правку
+  // пользователя и сохраняют её на сервер. Так подставленные значения
+  // уходили к OpenAI — уже после ответа, в обход маскировки.
+  //
+  // Теперь страница сайта не меняется вообще. Метки остаются метками, а их
+  // значения показываются в собственной панели расширения: она живёт в
+  // закрытом shadow DOM вне <body>, сайт её не видит и сохранить не может.
 
   let restoreTimer = null;
 
   function scheduleRestore() {
     clearTimeout(restoreTimer);
-    restoreTimer = setTimeout(restoreVisibleTokens, 900);
+    restoreTimer = setTimeout(refreshPanel, 900);
   }
 
   // Список типов совпадает с EntityType шлюза (gateway/models.py)
   const TOKEN_RE_G =
     /\[(?:CONFIDENTIAL|BIRTHDATE|ADDRESS|PERSON|SECRET|AMOUNT|ID_DOC|PHONE|EMAIL|PLATE|IBAN|CARD|IIN|BIN)_\d+\]/g;
 
-  function shouldSkip(node) {
-    const parent = node.parentElement;
-    if (!parent) return true;
-    if (parent.closest("#aigate-toast, script, style, noscript")) return true;
-    // Реальные данные никогда не возвращаются в поле ввода сообщения.
-    // Остальные редактируемые блоки (например, карточка-черновик ChatGPT)
-    // восстанавливаем: это ответ модели, а не то, что уйдёт наружу.
-    const composer = findComposer();
-    if (composer && composer.contains(node)) return true;
-    return false;
-  }
+  const MESSAGE_SELECTORS = [
+    '[data-message-author-role="assistant"]', // ChatGPT
+    ".font-claude-message", // Claude
+    '[data-is-streaming]', // Claude (новая разметка)
+    "message-content", // Gemini
+    "model-response",
+  ];
 
-  // Сайты могут разбить токен на несколько узлов разметки:
-  // "[" + "PERSON_1" + "]" в разных <span>. Поэтому ищем токены в склеенном
-  // тексте и затем раскладываем замену обратно по исходным узлам.
-  async function restoreVisibleTokens() {
+  // Текст страницы без поля ввода. Токены могут быть разбиты на несколько
+  // узлов разметки ("[" + "PERSON_1" + "]"), поэтому ищем в склеенном тексте.
+  function visibleText() {
+    const composer = findComposer();
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-    const nodes = [];
-    const starts = [];
     let full = "";
     while (walker.nextNode()) {
       const n = walker.currentNode;
-      if (!n.nodeValue || shouldSkip(n)) continue;
-      nodes.push(n);
-      starts.push(full.length);
+      if (!n.nodeValue) continue;
+      if (composer && composer.contains(n)) continue;
+      if (n.parentElement && n.parentElement.closest("script, style, noscript")) continue;
       full += n.nodeValue;
     }
-    const matches = [...full.matchAll(TOKEN_RE_G)];
-    if (!matches.length) return;
+    return full;
+  }
 
-    const unique = [...new Set(matches.map((m) => m[0]))];
-    const resp = await sendToBackground({
-      type: "AIGATE_RESTORE",
-      convKey: convKey(),
-      text: unique.join(SEP),
-    });
+  function lastAssistantText() {
+    for (const sel of MESSAGE_SELECTORS) {
+      const all = document.querySelectorAll(sel);
+      if (all.length) return all[all.length - 1].innerText || "";
+    }
+    return "";
+  }
+
+  async function restoreText(text) {
+    const resp = await sendToBackground({ type: "AIGATE_RESTORE", convKey: convKey(), text });
     if (!resp.ok) {
-      log("восстановление не выполнено:", resp.error, "| ключ:", convKey(), "| токены:", unique.join(" "));
+      log("расшифровка не выполнена:", resp.error, "| ключ:", convKey());
+      return null;
+    }
+    return resp.result.text;
+  }
+
+  // --- панель (shadow DOM вне <body>) ---
+
+  let panel = null;
+
+  function buildPanel() {
+    const host = document.createElement("aigate-panel");
+    host.style.cssText = "all:initial;position:fixed;right:16px;bottom:96px;z-index:2147483647";
+    // вне <body>: ни React, ни редакторы сайта не наблюдают эту часть документа
+    document.documentElement.appendChild(host);
+    const root = host.attachShadow({ mode: "closed" });
+    root.innerHTML = `
+      <style>
+        .box { font: 13px/1.45 system-ui, "Segoe UI", sans-serif; color: #1c2733; background: #fbfcfd;
+               border: 1px solid #cfd6de; border-radius: 10px; box-shadow: 0 6px 20px rgba(28,39,51,.18);
+               width: 300px; max-height: 50vh; display: flex; flex-direction: column; }
+        header { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid #e3e8ee;
+                 cursor: pointer; user-select: none; }
+        header b { font-weight: 650; flex: 1; }
+        .count { color: #4b3f9e; font-weight: 600; }
+        .list { overflow: auto; padding: 6px 10px; margin: 0; list-style: none; }
+        .list li { display: flex; gap: 8px; padding: 3px 0; border-bottom: 1px dashed #e3e8ee; }
+        .tok { color: #4b3f9e; background: #e6e3f6; border-radius: 3px; padding: 0 3px;
+               font: 12px ui-monospace, Consolas, monospace; white-space: nowrap; align-self: flex-start; }
+        .val { overflow-wrap: anywhere; }
+        .actions { padding: 8px 10px; border-top: 1px solid #e3e8ee; display: flex; flex-direction: column; gap: 4px; }
+        button { font: inherit; background: #4b3f9e; color: #fff; border: 0; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+        button:focus-visible { outline: 2px solid #4b3f9e; outline-offset: 2px; }
+        .note { color: #5b6876; font-size: 12px; }
+        .collapsed .list, .collapsed .actions { display: none; }
+      </style>
+      <div class="box">
+        <header title="Свернуть или развернуть"><b>AI-Gate: настоящие значения</b><span class="count"></span></header>
+        <ul class="list"></ul>
+        <div class="actions">
+          <button type="button" class="copy">Скопировать последний ответ с настоящими данными</button>
+          <span class="note">Сайт видит только метки. Значения показаны здесь и только вам.</span>
+        </div>
+      </div>`;
+    const box = root.querySelector(".box");
+    root.querySelector("header").addEventListener("click", () => box.classList.toggle("collapsed"));
+    root.querySelector(".copy").addEventListener("click", async () => {
+      const text = lastAssistantText();
+      if (!text) return notify("ответ не найден на странице", "info");
+      const restored = await restoreText(text);
+      if (restored == null) return notify("шлюз недоступен, расшифровать не удалось", "error");
+      try {
+        await navigator.clipboard.writeText(restored);
+        notify("ответ с настоящими данными скопирован", "ok");
+      } catch (_) {
+        notify("браузер не дал доступ к буферу обмена", "error");
+      }
+    });
+    return { host, list: root.querySelector(".list"), count: root.querySelector(".count") };
+  }
+
+  async function refreshPanel() {
+    const tokens = [...new Set([...visibleText().matchAll(TOKEN_RE_G)].map((m) => m[0]))];
+    if (!tokens.length) {
+      if (panel) panel.host.style.display = "none";
       return;
     }
-    const restored = resp.result.text.split(SEP);
-    if (restored.length !== unique.length) return;
-    log("восстановлено токенов:", unique.length);
-    const value = new Map(unique.map((t, i) => [t, restored[i]]));
-
-    // индекс узла, в который попадает позиция pos склеенного текста
-    function locate(pos) {
-      let lo = 0, hi = starts.length - 1;
-      while (lo < hi) {
-        const mid = (lo + hi + 1) >> 1;
-        if (starts[mid] <= pos) lo = mid; else hi = mid - 1;
-      }
-      return lo;
+    const restored = await restoreText(tokens.join(SEP));
+    if (restored == null) return;
+    const values = restored.split(SEP);
+    if (values.length !== tokens.length) return;
+    const known = tokens
+      .map((t, i) => [t, values[i]])
+      .filter(([t, v]) => v && v !== t); // шлюз не знает токен: другой диалог или истёк срок
+    if (!known.length) {
+      if (panel) panel.host.style.display = "none";
+      return;
     }
-
-    // с конца, чтобы замены не сдвигали ещё не обработанные позиции
-    for (const m of matches.reverse()) {
-      const real = value.get(m[0]);
-      if (!real || real === m[0]) continue; // шлюз не знает токен (истёк TTL)
-      const a = locate(m.index);
-      const b = locate(m.index + m[0].length - 1);
-      const na = nodes[a], nb = nodes[b];
-      if (!na.isConnected || !nb.isConnected) continue;
-      const offA = m.index - starts[a];
-      const offB = m.index + m[0].length - starts[b];
-      if (a === b) {
-        na.nodeValue = na.nodeValue.slice(0, offA) + real + na.nodeValue.slice(offB);
-      } else {
-        const tail = nb.nodeValue.slice(offB);
-        na.nodeValue = na.nodeValue.slice(0, offA) + real;
-        for (let i = a + 1; i < b; i++) nodes[i].nodeValue = "";
-        nb.nodeValue = tail;
-      }
-    }
+    if (!panel || !panel.host.isConnected) panel = buildPanel();
+    panel.host.style.display = "block";
+    panel.count.textContent = String(known.length);
+    panel.list.replaceChildren(
+      ...known.map(([t, v]) => {
+        const li = document.createElement("li");
+        const tok = document.createElement("span");
+        tok.className = "tok";
+        tok.textContent = t;
+        const val = document.createElement("span");
+        val.className = "val";
+        val.textContent = v;
+        li.append(tok, val);
+        return li;
+      })
+    );
+    log("расшифровано меток:", known.length);
   }
 
   new MutationObserver(scheduleRestore).observe(document.body, {

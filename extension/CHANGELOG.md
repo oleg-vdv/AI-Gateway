@@ -1,5 +1,17 @@
 # AI-Gate DLP browser extension — changelog
 
+## 0.3.2 — security fix
+- **Real values are no longer written into the site's page.** Restoring
+  placeholders in the reply's DOM leaked them: ChatGPT keeps the conversation
+  locally and syncs it, and its editable reply blocks treat a DOM change as a
+  user edit, so the restored name, IIN and phone were saved to OpenAI after the
+  reply. Found on 23.10.2026 with test data: the conversation opened on
+  another device showed real values.
+- Instead, a panel (closed shadow root outside `<body>`) lists each visible
+  placeholder with its value and copies the last reply with real values.
+- Verification: open the conversation on another device; reloading the page in
+  the same browser is not proof.
+
 ## 0.3.1
 - ChatGPT's temporary conversation address changed from `/c/WEB:<uuid>` to
   `/c/local-chatgpt:<uuid>`; any `/c/` id with a colon is now treated as

@@ -134,8 +134,16 @@ change rather than a redeployment.
 ### Channel 2 — Browser (ChatGPT / Claude / Gemini)
 
 The extension intercepts a message **before** the site sends it, has the
-gateway mask it, sends only the anonymized text, and substitutes real values
-back into the assistant's reply on your screen. The web LLM never sees them.
+gateway mask it and sends only the anonymized text. The reply on the site
+keeps its placeholders; the extension's own panel lists what each placeholder
+stands for (`[PERSON_1]` — the real name) and copies the reply with real
+values. The web LLM never sees them.
+
+> **Since 0.3.2 the extension never writes real values into the site's page.**
+> Earlier versions replaced placeholders in the reply's DOM. ChatGPT keeps the
+> conversation in the browser and syncs it, and its editable reply blocks treat
+> a DOM change as a user edit — the restored values were saved to OpenAI after
+> the fact. The panel lives in a closed shadow root outside `<body>`.
 
 **Install (2 minutes):**
 
@@ -150,15 +158,20 @@ back into the assistant's reply on your screen. The web LLM never sees them.
 3. Click the extension icon → **Check connection**. The badge shows `ON` when
    the gateway answers and `!` when it does not.
 
-**Verify it actually works** — the reply you see is restored locally, so it
-does not prove anything by itself:
+**Verify it actually works** — check what the vendor stores, not what your
+browser shows:
 
 1. Send `Customer Yerzhan Nursultanuly, IIN 900715300005, disputes a charge of
    150000 tenge. Draft a short reply that mentions his name and IIN.`
-   A green notice lists what was masked; the reply shows the real values.
-2. Turn the extension **off** and reload the page. The conversation now shows
-   `[PERSON_1]`, `[IIN_1]`, `[AMOUNT_1]` — exactly what the LLM vendor stores.
-3. Stop the gateway and try to send again: the message is **not** sent
+   A green notice lists what was masked; the reply on the page keeps
+   `[PERSON_1]`, the AI-Gate panel shows the real name.
+2. Open the same conversation **on another device** (phone app, or a browser
+   profile without the extension). It must show `[PERSON_1]`, `[IIN_1]`,
+   `[AMOUNT_1]` — exactly what the LLM vendor stores. Reloading the page in the
+   same browser is not proof: ChatGPT may show its local copy.
+3. DevTools → Network → the `conversation` request → Payload: the `parts`
+   field holds placeholders only.
+4. Stop the gateway and try to send again: the message is **not** sent
    (fail-closed), a red notice explains why.
 
 **How it behaves:**
@@ -167,8 +180,9 @@ does not prove anything by itself:
   placeholder across messages and the model never confuses two people.
 - Fail-closed: if the gateway is down or returns `block`, nothing is sent.
 - Secrets (API keys, tokens) are blocked, not masked.
-- Placeholders are restored even when the site splits them across several
-  DOM nodes; real values are never written back into the message box.
+- Placeholders are found even when the site splits them across several DOM
+  nodes. Real values are never written into the site's page — neither the
+  message box nor the replies.
 - Permissions are narrow: `localhost` only by default; a remote gateway's
   address is requested at runtime when you set it.
 - Diagnostics: DevTools → Console, filter `AI-Gate` (no personal data is logged).
