@@ -28,8 +28,37 @@ const ALLOWED_ORIGINS = [
 // идентификаторы сессий не должны переживать рабочий день на диске.
 const sessionStore = chrome.storage.session || chrome.storage.local;
 
-function getConfig() {
-  return new Promise((resolve) => chrome.storage.sync.get(DEFAULTS, resolve));
+// v0.3.0: настройки хранятся в storage.local, а не в storage.sync — ключ
+// канала не должен синхронизироваться в аккаунт Google. Администратор может
+// задать адрес шлюза и ключ политикой (storage.managed, GPO/MDM); такие
+// значения важнее локальных и в настройках не редактируются.
+function readArea(area, keys) {
+  return new Promise((resolve) => {
+    if (!area) return resolve({});
+    try {
+      area.get(keys, (items) => resolve(chrome.runtime.lastError ? {} : items || {}));
+    } catch (_) {
+      resolve({});
+    }
+  });
+}
+
+async function migrateFromSync() {
+  const keys = Object.keys(DEFAULTS);
+  const local = await readArea(chrome.storage.local, keys);
+  if (Object.keys(local).length) return;
+  const synced = await readArea(chrome.storage.sync, keys);
+  if (!Object.keys(synced).length) return;
+  await chrome.storage.local.set(synced);
+  await chrome.storage.sync.remove(keys);
+}
+
+async function getConfig() {
+  await migrateFromSync();
+  const keys = Object.keys(DEFAULTS);
+  const local = await readArea(chrome.storage.local, keys);
+  const managed = await readArea(chrome.storage.managed, keys);
+  return { ...DEFAULTS, ...local, ...managed };
 }
 
 function baseUrl(cfg) {

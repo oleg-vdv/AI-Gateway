@@ -266,7 +266,9 @@
     restoreTimer = setTimeout(restoreVisibleTokens, 900);
   }
 
-  const TOKEN_RE_G = /\[(?:IIN|BIN|PERSON|IBAN|CARD|SECRET|AMOUNT)_\d+\]/g;
+  // Список типов совпадает с EntityType шлюза (gateway/models.py)
+  const TOKEN_RE_G =
+    /\[(?:CONFIDENTIAL|BIRTHDATE|ADDRESS|PERSON|SECRET|AMOUNT|ID_DOC|PHONE|EMAIL|PLATE|IBAN|CARD|IIN|BIN)_\d+\]/g;
 
   function shouldSkip(node) {
     const parent = node.parentElement;

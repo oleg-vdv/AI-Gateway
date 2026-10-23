@@ -20,29 +20,62 @@ function isLocal(url) {
   }
 }
 
-chrome.storage.sync.get(DEFAULTS, (cfg) => {
-  for (const key of Object.keys(DEFAULTS)) {
-    document.getElementById(key).value = cfg[key] || "";
+function readArea(area, keys) {
+  return new Promise((resolve) => {
+    if (!area) return resolve({});
+    try {
+      area.get(keys, (items) => resolve(chrome.runtime.lastError ? {} : items || {}));
+    } catch (_) {
+      resolve({});
+    }
+  });
+}
+
+// Настройки в storage.local (не синхронизируются в аккаунт Google);
+// значения из политики администратора (storage.managed) важнее и не редактируются.
+let managed = {};
+
+(async () => {
+  const keys = Object.keys(DEFAULTS);
+  const synced = await readArea(chrome.storage.sync, keys);
+  const local = await readArea(chrome.storage.local, keys);
+  managed = await readArea(chrome.storage.managed, keys);
+  const cfg = { ...DEFAULTS, ...synced, ...local, ...managed };
+  for (const key of keys) {
+    const input = document.getElementById(key);
+    input.value = cfg[key] || "";
+    if (key in managed) {
+      input.disabled = true;
+      input.title = "Задано администратором";
+    }
   }
-});
+  if (Object.keys(managed).length) {
+    show("Часть настроек задал администратор, их нельзя изменить здесь.");
+  }
+})();
 
 document.getElementById("save").addEventListener("click", () => {
   const cfg = {};
   for (const key of Object.keys(DEFAULTS)) {
+    if (key in managed) continue;
     cfg[key] = document.getElementById(key).value.trim() || DEFAULTS[key];
   }
+  const gatewayUrl = managed.gatewayUrl || cfg.gatewayUrl;
   let origin;
   try {
-    origin = new URL(cfg.gatewayUrl).origin;
+    origin = new URL(gatewayUrl).origin;
   } catch (_) {
     show("Адрес шлюза указан неверно. Пример: http://localhost:8080", "err");
     return;
   }
 
   const save = () =>
-    chrome.storage.sync.set(cfg, () => show("Сохранено", "ok"));
+    chrome.storage.local.set(cfg, () => {
+      chrome.storage.sync.remove(Object.keys(DEFAULTS));
+      show("Сохранено", "ok");
+    });
 
-  if (isLocal(cfg.gatewayUrl)) {
+  if (isLocal(gatewayUrl)) {
     save();
     return;
   }
