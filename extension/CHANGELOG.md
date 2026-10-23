@@ -1,5 +1,21 @@
 # AI-Gate DLP browser extension — changelog
 
+## 0.3.4 — security fix
+- **Messages on claude.ai were sent unmasked.** The composer was found only by
+  fixed selectors; Claude's new markup matched none of them, so the Enter
+  handler returned early and the site sent the original text. Found on
+  23.10.2026 with test data.
+- The chat input is now recognised where the user types: any editable field
+  (textarea / contenteditable, outermost editor root) that has a chat hint
+  (aria-label, placeholder) or a send button in a block without other editors.
+  An ordinary document editor on the same page keeps Enter as a new line.
+- Send buttons are recognised by aria-label / data-testid / title (send,
+  submit, отправ) and by type=submit in a form with an editor.
+- Listeners moved from document to window (capture), the earliest point.
+- Fail-closed: a send button with no recognisable input stops the click;
+  if no chat input is visible on a supported site, a red warning is shown and
+  the badge turns "!".
+
 ## 0.3.3
 - "Copy the last reply with real values" finds ChatGPT's "Текст" card, which
   has no data-message-author-role: falls back to the last conversation turn

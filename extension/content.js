@@ -104,6 +104,78 @@
     return null;
   }
 
+  // v0.3.4: разметка сайтов меняется (Claude сменил поле ввода, и 0.3.3 его не
+  // узнал — сообщение ушло без маскировки). Поэтому поле ввода определяется не
+  // только по известным селекторам, но и по тому, где пользователь печатает:
+  // любое редактируемое поле, похожее на поле сообщения.
+
+  const EDITABLE =
+    'textarea, [contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"]';
+  const CHAT_HINT_RE = /message|prompt|chat|ask|reply|claude|gemini|сообщ|спрос|напиш|вопрос|ответ/i;
+  const SEND_HINT_RE = /send|submit|отправ/i;
+
+  function editableRoot(node) {
+    let el = node && (node.nodeType === 1 ? node : node.parentElement);
+    if (!el || el.closest("aigate-panel, #aigate-toast")) return null;
+    el = el.closest(EDITABLE);
+    if (!el) return null;
+    // внешний редактируемый блок (у ProseMirror/Tiptap вложенные узлы тоже editable)
+    let up = el.parentElement && el.parentElement.closest(EDITABLE);
+    while (up) {
+      el = up;
+      up = el.parentElement && el.parentElement.closest(EDITABLE);
+    }
+    return el;
+  }
+
+  function isSendButton(btn) {
+    if (!btn) return false;
+    if (btn.matches(SEND_SELECTORS.join(","))) return true;
+    const hint = [btn.getAttribute("aria-label"), btn.getAttribute("data-testid"), btn.title]
+      .filter(Boolean).join(" ");
+    if (SEND_HINT_RE.test(hint)) return true;
+    return btn.type === "submit" && !!btn.form && !!btn.form.querySelector(EDITABLE);
+  }
+
+  // Поле похоже на поле сообщения ИИ: известный селектор, рядом кнопка
+  // отправки или подсказка вроде «Напишите сообщение». Обычные редакторы на
+  // странице (документ «Текст» в ChatGPT) под это не подходят — Enter в них
+  // просто перевод строки.
+  function isChatInput(el) {
+    if (!el) return false;
+    if (el === findComposer()) return true;
+    const hint = ["aria-label", "placeholder", "data-placeholder", "id", "name", "data-testid"]
+      .map((a) => el.getAttribute(a) || "").join(" ");
+    if (CHAT_HINT_RE.test(hint)) return true;
+    // Ближайший общий блок с кнопкой отправки, в котором нет других
+    // редакторов: так поле сообщения отличается от редактора документа,
+    // который просто лежит на той же странице.
+    let scope = el.parentElement;
+    for (let depth = 0; scope && depth < 5; depth++, scope = scope.parentElement) {
+      const editors = new Set([...scope.querySelectorAll(EDITABLE)].map(editableRoot));
+      editors.delete(null);
+      if (editors.size > 1) return false;
+      if ([...scope.querySelectorAll("button")].some(isSendButton)) return true;
+    }
+    return false;
+  }
+
+  let lastChatInput = null;
+  window.addEventListener("focusin", (e) => {
+    const root = editableRoot(e.target);
+    if (root && isChatInput(root)) lastChatInput = root;
+  }, true);
+
+  function activeComposer() {
+    const known = findComposer();
+    if (known && known.isConnected) return known;
+    if (lastChatInput && lastChatInput.isConnected) return lastChatInput;
+    const candidates = [...document.querySelectorAll(EDITABLE)]
+      .map(editableRoot)
+      .filter((el) => el && el.offsetParent !== null && isChatInput(el));
+    return candidates.length ? candidates[candidates.length - 1] : null;
+  }
+
   function composerText(el) {
     if (!el) return "";
     return el.tagName === "TEXTAREA" ? el.value : el.innerText;
@@ -175,10 +247,16 @@
     return new Promise((r) => requestAnimationFrame(() => setTimeout(r, 30)));
   }
 
+  function sendButtonFor(composer) {
+    const scope = composer.closest("form") || composer.closest("fieldset");
+    const near = scope && [...scope.querySelectorAll("button")].find(isSendButton);
+    return near || findSendButton();
+  }
+
   async function resubmit(composer, clickedButton) {
     composer.setAttribute(MARK, "1");
     await nextFrame(); // даём React включить кнопку после смены текста
-    const btn = clickedButton || findSendButton();
+    const btn = clickedButton || sendButtonFor(composer);
     if (btn && !btn.disabled) {
       btn.click();
     } else {
@@ -223,29 +301,70 @@
     }
   }
 
-  document.addEventListener("keydown", (e) => {
-    if (e.key !== "Enter" || e.shiftKey || e.isComposing) return;
-    const composer = findComposer();
-    if (!composer || !composer.contains(e.target)) return;
-    if (composer.getAttribute(MARK)) return;
-    if (processing) { e.preventDefault(); e.stopImmediatePropagation(); return; }
-    if (!composerText(composer).trim()) return;
+  // Слушатели на window в фазе захвата: это самая ранняя точка, раньше
+  // любых обработчиков сайта (в том числе повешенных на document).
+
+  function stop(e) {
     e.preventDefault();
     e.stopImmediatePropagation();
-    interceptAndResubmit(composer, null);
+  }
+
+  window.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" || e.shiftKey || e.isComposing) return;
+    const root = editableRoot(e.target);
+    if (!root || !isChatInput(root)) return; // перевод строки в обычном редакторе
+    if (root.getAttribute(MARK)) return;
+    if (processing) return stop(e);
+    if (!composerText(root).trim()) return;
+    stop(e);
+    interceptAndResubmit(root, null);
   }, true);
 
-  document.addEventListener("click", (e) => {
-    const btn = e.target.closest(SEND_SELECTORS.join(","));
-    if (!btn) return;
-    const composer = findComposer();
-    if (!composer || composer.getAttribute(MARK)) return;
-    if (processing) { e.preventDefault(); e.stopImmediatePropagation(); return; }
+  window.addEventListener("click", (e) => {
+    const btn = e.target.closest && e.target.closest("button");
+    if (!isSendButton(btn)) return;
+    const scope = btn.closest("form") || btn.closest("fieldset");
+    const inScope = scope && [...scope.querySelectorAll(EDITABLE)].map(editableRoot).find(Boolean);
+    const composer = inScope || activeComposer();
+    if (!composer) {
+      // кнопка отправки есть, а поля, откуда она отправляет, расширение не нашло:
+      // не знаем, что уйдёт, — значит, не отпускаем (fail-closed)
+      stop(e);
+      notify("не удалось найти поле сообщения на этой странице. Отправка остановлена, " +
+        "чтобы данные не ушли без проверки. Обновите страницу или расширение.", "error");
+      return;
+    }
+    if (composer.getAttribute(MARK)) return;
+    if (processing) return stop(e);
     if (!composerText(composer).trim()) return;
-    e.preventDefault();
-    e.stopImmediatePropagation();
+    stop(e);
     interceptAndResubmit(composer, btn);
   }, true);
+
+  window.addEventListener("submit", (e) => {
+    const root = [...e.target.querySelectorAll(EDITABLE)].map(editableRoot).find(Boolean);
+    if (!root || root.getAttribute(MARK) || !composerText(root).trim()) return;
+    stop(e);
+    if (!processing) interceptAndResubmit(root, null);
+  }, true);
+
+  // Сторож: если на сайте ИИ расширение не видит ни одного поля сообщения,
+  // защита фактически не работает — об этом нужно сказать, а не молчать.
+  log("активно на", location.host, "версия", chrome.runtime.getManifest().version);
+  let warned = false;
+  setInterval(() => {
+    const ok = !!activeComposer();
+    if (!ok && !warned && document.readyState === "complete") {
+      warned = true;
+      log("поле сообщения не найдено на", location.host);
+      notify("не вижу поле сообщения на этой странице — защита может не работать. " +
+        "Не отправляйте персональные данные и сообщите администратору.", "error");
+      sendToBackground({ type: "AIGATE_STATUS", ok: false });
+    } else if (ok && warned) {
+      warned = false;
+      sendToBackground({ type: "AIGATE_STATUS", ok: true });
+    }
+  }, 3000);
 
   // Файлы расширение не проверяет: предупреждаем, чтобы это не было сюрпризом.
   document.addEventListener("change", (e) => {
