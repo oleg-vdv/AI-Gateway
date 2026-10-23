@@ -19,6 +19,12 @@ Control Plane (F8):
   POST /try/api/preview     — что ушло бы провайдеру; ничего не хранит и не отправляет
   POST /try/api/file        — обезличенная копия файла для скачивания
 
+Облачный режим (AIGATE_MULTI_TENANT=1): клиент определяется по ключу
+(agk_<id>_… — канал, aga_<id>_… — админ клиента), у каждого свои политика,
+журнал, правила и хранилище меток. Операторский API (AIGATE_OPERATOR_TOKEN):
+  GET/POST /operator/api/tenants, PUT /operator/api/tenants/<id>,
+  POST /operator/api/tenants/<id>/keys, POST /operator/api/tenants/<id>/keys/revoke
+
 Корпоративный чат (выключается AIGATE_CHAT_PAGE=0):
   GET  /chat                — страница чата поверх /v1/chat/completions
   GET  /v1/models           — модели для выбора («провайдер/модель»)
@@ -48,6 +54,7 @@ from gateway import __version__
 from gateway.config import Settings
 from gateway.core import files, owner_report
 from gateway.core.pipeline import Pipeline
+from gateway.core.tenants import SeatLimitExceeded, TenantRegistry
 from gateway.core.tokenizer import StreamDetokenizer
 from gateway.core.providers import ProviderConfig
 from gateway.models import Channel, CheckRequest, DetectorRule, Policy, Verdict
@@ -75,6 +82,9 @@ class GatewayHandler(BaseHTTPRequestHandler):
     # заполняются фабрикой make_server()
     pipeline: Pipeline = None  # type: ignore[assignment]
     settings: Settings = None  # type: ignore[assignment]
+    # облачный режим: реестр клиентов; pipeline выбирается по ключу запроса
+    tenants: TenantRegistry | None = None
+    tenant = None
 
     server_version = f"AI-Gate/{__version__}"
     protocol_version = "HTTP/1.1"
@@ -84,7 +94,25 @@ class GatewayHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):  # не логировать URL с потенц. данными
         logger.info("%s %s", self.command, self.path.split("?")[0])
 
+    def _drain_body(self) -> None:
+        """Дочитать непрочитанное тело запроса перед ответом.
+
+        Отказ (401, 403, 404) часто отправляется до чтения тела. Если закрыть
+        соединение с непрочитанными данными, Windows рвёт его (WSAECONNABORTED)
+        и клиент не получает даже код ошибки; при keep-alive остаток тела
+        к тому же испортил бы следующий запрос.
+        """
+        if getattr(self, "_body_consumed", True):
+            return
+        self._body_consumed = True
+        length = int(self.headers.get("Content-Length") or 0)
+        if 0 < length <= _MAX_BODY:
+            self.rfile.read(length)
+        elif length > _MAX_BODY:
+            self.close_connection = True  # столько читать не будем — соединение закроется
+
     def _send_json(self, status: int, payload: dict | list) -> None:
+        self._drain_body()
         body = json.dumps(payload, ensure_ascii=False).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -102,6 +130,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
             raise ApiError(400, "Пустое тело запроса")
         if length > _MAX_BODY:
             raise ApiError(413, "Тело запроса слишком большое")
+        self._body_consumed = True
         try:
             return json.loads(self.rfile.read(length).decode())
         except (ValueError, UnicodeDecodeError):
@@ -123,7 +152,36 @@ class GatewayHandler(BaseHTTPRequestHandler):
         auth = self.headers.get("Authorization", "")
         return self.headers.get("X-AIGate-Key") or auth.removeprefix("Bearer ").strip()
 
+    def _bind_tenant(self, admin: bool) -> None:
+        found = self.tenants.authenticate(self._presented_key())
+        if found is None:
+            raise ApiError(401, "Неверный ключ")
+        tenant, role = found
+        if admin and role != "admin":
+            raise ApiError(403, "Нужен админ-ключ компании")
+        self.tenant = tenant
+        self.pipeline = self.tenants.pipeline_for(tenant)
+
+    def _check_seat(self, user: str) -> None:
+        if self.tenant is None:
+            return
+        try:
+            self.tenants.check_seat(self.tenant, user, self.settings.report_utc_offset)
+        except SeatLimitExceeded as e:
+            raise ApiError(403, str(e))
+
+    def _require_operator(self) -> None:
+        token = self.settings.operator_token
+        if self.tenants is None or not token:
+            raise ApiError(404, "Не найдено")
+        presented = self._presented_key()
+        if not presented or not hmac.compare_digest(presented, token):
+            raise ApiError(401, "Неверный токен оператора")
+
     def _require_channel_auth(self) -> None:
+        if self.tenants is not None:
+            self._bind_tenant(admin=False)
+            return
         allowed = [
             k.strip() for k in self.settings.channel_api_keys.split(",") if k.strip()
         ]
@@ -136,6 +194,10 @@ class GatewayHandler(BaseHTTPRequestHandler):
             raise ApiError(401, "Неверный ключ канала")
 
     def _require_admin_auth(self) -> None:
+        if self.tenants is not None:
+            # в облаке «с localhost без токена» не бывает: только админ-ключ клиента
+            self._bind_tenant(admin=True)
+            return
         if self.settings.admin_token:
             presented = self._presented_key()
             if not presented or not hmac.compare_digest(
@@ -162,7 +224,15 @@ class GatewayHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
+    def _begin_request(self) -> None:
+        # keep-alive: один экземпляр обработчика обслуживает несколько
+        # запросов, привязка к клиенту не должна переходить между ними
+        self.__dict__.pop("pipeline", None)
+        self.tenant = None
+        self._body_consumed = self.command not in ("POST", "PUT")
+
     def do_GET(self):
+        self._begin_request()
         try:
             route = self._route()
             if route == "/healthz":
@@ -170,6 +240,9 @@ class GatewayHandler(BaseHTTPRequestHandler):
             elif route == "/v1/models":
                 self._require_channel_auth()
                 self._send_json(200, {"object": "list", "data": self._models()})
+            elif route == "/operator/api/tenants":
+                self._require_operator()
+                self._send_json(200, [t.public() for t in self.tenants.list()])
             elif route == "/chat" and self.settings.chat_page:
                 self._send_static("chat.html")
             elif route == "/admin/api/policy":
@@ -270,11 +343,13 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self._send_json(500, {"detail": "Внутренняя ошибка"})
 
     def do_POST(self):
+        self._begin_request()
         try:
             route = self._route()
             if route == "/v1/check":
                 self._require_channel_auth()
                 req = self._parse_check_request()
+                self._check_seat(req.user)
                 self._send_json(200, self.pipeline.process(req).to_dict())
             elif route == "/v1/restore":
                 self._require_channel_auth()
@@ -299,6 +374,23 @@ class GatewayHandler(BaseHTTPRequestHandler):
                         413, f"Текст длиннее {_MAX_PREVIEW_CHARS} символов — проверьте его частями"
                     )
                 self._send_json(200, self.pipeline.preview(text))
+            elif route == "/operator/api/tenants":
+                self._require_operator()
+                self._create_tenant()
+            elif route.startswith("/operator/api/tenants/") and route.endswith("/keys"):
+                self._require_operator()
+                try:
+                    key = self.tenants.issue_channel_key(route.split("/")[4])
+                except KeyError as e:
+                    raise ApiError(404, str(e))
+                self._send_json(200, {"channel_key": key})
+            elif route.startswith("/operator/api/tenants/") and route.endswith("/keys/revoke"):
+                self._require_operator()
+                try:
+                    self.tenants.revoke_channel_keys(route.split("/")[4])
+                except KeyError as e:
+                    raise ApiError(404, str(e))
+                self._send_json(200, {"revoked": True})
             elif route == "/admin/api/report/send":
                 self._require_admin_auth()
                 s = self.settings
@@ -331,9 +423,25 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self._send_json(500, {"detail": "Внутренняя ошибка, запрос отклонён"})
 
     def do_PUT(self):
+        self._begin_request()
         try:
             route = self._route()
-            if route == "/admin/api/policy":
+            if route.startswith("/operator/api/tenants/"):
+                self._require_operator()
+                body = self._read_json()
+                try:
+                    tenant = self.tenants.update(
+                        route.split("/")[4],
+                        enabled=body.get("enabled"),
+                        seats=body.get("seats"),
+                        name=body.get("name"),
+                    )
+                except KeyError as e:
+                    raise ApiError(404, str(e))
+                except (ValueError, TypeError) as e:
+                    raise ApiError(400, str(e))
+                self._send_json(200, tenant.public())
+            elif route == "/admin/api/policy":
                 self._require_admin_auth()
                 try:
                     policy = Policy.from_dict(self._read_json())
@@ -356,6 +464,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 self._send_json(200, [r.to_dict() for r in rules])
             elif route == "/admin/api/providers":
                 self._require_admin_auth()
+                if self.tenants is not None:
+                    raise ApiError(403, "В облаке провайдерами ИИ управляет оператор")
                 registry = getattr(self.pipeline.forwarder, "registry", None)
                 if registry is None:
                     raise ApiError(404, "Мультипровайдер не сконфигурирован")
@@ -390,6 +500,26 @@ class GatewayHandler(BaseHTTPRequestHandler):
             return CheckRequest.from_dict(body)
         except ValueError as e:
             raise ApiError(400, str(e))
+
+    def _create_tenant(self) -> None:
+        body = self._read_json()
+        try:
+            tenant, admin_key, channel_key = self.tenants.create(
+                str(body.get("id", "")),
+                str(body.get("name") or body.get("id", "")),
+                int(body.get("seats", 10)),
+            )
+        except (ValueError, TypeError) as e:
+            raise ApiError(400, str(e))
+        self._send_json(
+            201,
+            {
+                **tenant.public(),
+                # показываются один раз: в реестре хранятся только хеши
+                "admin_key": admin_key,
+                "channel_key": channel_key,
+            },
+        )
 
     def _monthly_report(self) -> dict:
         """Отчёт за ?month=YYYY-MM; по умолчанию — за прошлый месяц."""
@@ -428,6 +558,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
         with _usage_lock:
             for key in [k for k in _usage if k[1] != day]:
                 del _usage[key]  # вчерашние счётчики не копятся
+            user = f"{self.tenant.id}:{user}" if self.tenant else user
             used = _usage.get((user, day), 0)
             if used >= limit:
                 raise ApiError(
@@ -446,6 +577,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
             data = base64.b64decode(content, validate=True)
         except (binascii.Error, ValueError):
             raise ApiError(400, "content_base64: некорректный base64")
+        self._check_seat(str(body.get("user") or "file-user"))
         try:
             result = self.pipeline.sanitize_file(
                 filename,
@@ -511,6 +643,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
         user = str(body.get("user") or "egress-app")
         model = body.get("model")
         self._check_daily_limit(user)
+        self._check_seat(user)
         try:
             sanitized_messages, total_counts = self._sanitize_messages(
                 messages, user, session_id, channel
@@ -646,10 +779,12 @@ class GatewayHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def make_server(pipeline: Pipeline, settings: Settings) -> ThreadingHTTPServer:
+def make_server(
+    pipeline: Pipeline, settings: Settings, tenants: TenantRegistry | None = None
+) -> ThreadingHTTPServer:
     handler = type(
         "BoundGatewayHandler",
         (GatewayHandler,),
-        {"pipeline": pipeline, "settings": settings},
+        {"pipeline": pipeline, "settings": settings, "tenants": tenants},
     )
     return ThreadingHTTPServer((settings.host, settings.port), handler)

@@ -94,6 +94,12 @@ class Settings:
     report_utc_offset: int = 5     # часовой пояс границ месяца (РК — UTC+5)
     report_state_path: Path = field(default_factory=lambda: Path("data/report_state.json"))
 
+    # --- Облачный режим: несколько компаний на одном шлюзе ---
+    multi_tenant: bool = False
+    operator_token: str = ""  # пусто = операторский API выключен
+    tenants_path: Path = field(default_factory=lambda: Path("data/tenants.json"))
+    tenants_data_root: Path = field(default_factory=lambda: Path("data/tenants"))
+
     @classmethod
     def from_env(cls) -> "Settings":
         _load_dotenv()
@@ -126,4 +132,8 @@ class Settings:
             report_day=int(_env("REPORT_DAY", "1")),
             report_utc_offset=int(_env("REPORT_UTC_OFFSET", "5")),
             report_state_path=Path(_env("REPORT_STATE_PATH", "data/report_state.json")),
+            multi_tenant=_env_bool("MULTI_TENANT", False),
+            operator_token=_env("OPERATOR_TOKEN", ""),
+            tenants_path=Path(_env("TENANTS_PATH", "data/tenants.json")),
+            tenants_data_root=Path(_env("TENANTS_DATA_ROOT", "data/tenants")),
         )
