@@ -1,5 +1,11 @@
 # AI-Gate DLP browser extension — changelog
 
+## 0.3.1
+- ChatGPT's temporary conversation address changed from `/c/WEB:<uuid>` to
+  `/c/local-chatgpt:<uuid>`; any `/c/` id with a colon is now treated as
+  temporary, so the session follows the conversation to its real address and
+  replies are restored again (was: "нет сессии для этого диалога").
+
 ## 0.3.0
 - Settings moved from `storage.sync` to `storage.local`: the channel key is no longer
   synced to the user's Google account. Existing settings are migrated on first use.
