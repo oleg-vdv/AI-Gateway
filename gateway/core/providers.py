@@ -22,7 +22,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterable, Iterator
 
 from .forwarder import ProviderError
 
@@ -144,7 +144,7 @@ class ProviderRegistry:
 
 
 def build_request(
-    cfg: ProviderConfig, messages: list[dict], model: str
+    cfg: ProviderConfig, messages: list[dict], model: str, stream: bool = False
 ) -> tuple[str, dict, bytes]:
     """(url, headers, body) для вызова провайдера."""
     if cfg.kind == "anthropic":
@@ -172,7 +172,44 @@ def build_request(
         headers = {"Content-Type": "application/json"}
         if cfg.api_key:  # локальные vLLM/Ollama могут работать без ключа
             headers["Authorization"] = f"Bearer {cfg.api_key}"
+    if stream:
+        payload["stream"] = True
     return url, headers, json.dumps(payload).encode()
+
+
+def parse_stream(cfg: ProviderConfig, lines: Iterable[bytes]) -> Iterator[str]:
+    """Текстовые фрагменты из SSE-потока провайдера.
+
+    OpenAI-совместимые: `data: {"choices":[{"delta":{"content":"..."}}]}` до
+    `data: [DONE]`. Anthropic: события content_block_delta с delta.text до
+    message_stop. Строки без `data:` (event:, комментарии, пустые) пропускаются.
+    """
+    for raw in lines:
+        line = raw.decode("utf-8", errors="replace").strip()
+        if not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if data == "[DONE]":
+            return
+        try:
+            event = json.loads(data)
+        except ValueError as e:
+            raise ProviderError(f"Некорректный поток провайдера '{cfg.name}': {e}") from e
+        if cfg.kind == "anthropic":
+            kind = event.get("type")
+            if kind == "content_block_delta":
+                text = (event.get("delta") or {}).get("text")
+                if text:
+                    yield text
+            elif kind == "message_stop":
+                return
+            elif kind == "error":
+                raise ProviderError(f"Провайдер '{cfg.name}': {event.get('error')}")
+        else:
+            for choice in event.get("choices") or []:
+                text = (choice.get("delta") or {}).get("content")
+                if text:
+                    yield text
 
 
 def parse_response(cfg: ProviderConfig, data: dict) -> str:
@@ -198,15 +235,38 @@ def _http_transport(cfg: ProviderConfig, messages: list[dict], model: str) -> st
         raise ProviderError(f"Некорректный ответ провайдера '{cfg.name}': {e}") from e
 
 
+def _http_stream_transport(
+    cfg: ProviderConfig, messages: list[dict], model: str
+) -> Iterator[str]:
+    url, headers, body = build_request(cfg, messages, model, stream=True)
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    try:
+        resp = urllib.request.urlopen(req, timeout=cfg.timeout)
+    except urllib.error.URLError as e:
+        raise ProviderError(f"Провайдер '{cfg.name}' недоступен: {e}") from e
+    with resp:
+        try:
+            yield from parse_stream(cfg, resp)
+        except OSError as e:  # обрыв соединения посреди ответа
+            raise ProviderError(f"Провайдер '{cfg.name}' оборвал поток: {e}") from e
+
+
 Transport = Callable[[ProviderConfig, list[dict], str], str]
+StreamTransport = Callable[[ProviderConfig, list[dict], str], Iterator[str]]
 
 
 class MultiForwarder:
     """Форвардер с маршрутизацией по провайдерам (интерфейс как у Forwarder)."""
 
-    def __init__(self, registry: ProviderRegistry, transport: Transport | None = None):
+    def __init__(
+        self,
+        registry: ProviderRegistry,
+        transport: Transport | None = None,
+        stream_transport: StreamTransport | None = None,
+    ):
         self.registry = registry
         self._transport = transport or _http_transport
+        self._stream_transport = stream_transport or _http_stream_transport
 
     @property
     def provider_name(self) -> str:
@@ -238,6 +298,18 @@ class MultiForwarder:
         if not model_name:
             raise ProviderError(f"Для провайдера '{cfg.name}' не задана модель")
         return self._transport(cfg, messages, model_name)
+
+    def chat_stream(
+        self,
+        messages: list[dict],
+        model: str | None = None,
+        provider: str | None = None,
+    ) -> Iterator[str]:
+        """Ответ провайдера по частям (SSE). Ошибки — ProviderError."""
+        cfg, model_name = self.resolve(provider=provider, model=model)
+        if not model_name:
+            raise ProviderError(f"Для провайдера '{cfg.name}' не задана модель")
+        return self._stream_transport(cfg, messages, model_name)
 
     def complete(
         self,

@@ -22,6 +22,7 @@ Control Plane (F8):
 from __future__ import annotations
 
 import hmac
+import itertools
 import json
 import logging
 import re
@@ -33,6 +34,7 @@ from pathlib import Path
 from gateway import __version__
 from gateway.config import Settings
 from gateway.core.pipeline import Pipeline
+from gateway.core.tokenizer import StreamDetokenizer
 from gateway.core.providers import ProviderConfig
 from gateway.models import Channel, CheckRequest, DetectorRule, Policy, Verdict
 
@@ -332,55 +334,67 @@ class GatewayHandler(BaseHTTPRequestHandler):
         except ValueError as e:
             raise ApiError(400, str(e))
 
-    def _chat_completions(self) -> None:
+    def _sanitize_messages(
+        self, messages: list, user: str, session_id: str, channel: Channel
+    ) -> tuple[list[dict], dict[str, int]]:
+        """Пропустить каждое сообщение через конвейер (dry_run, одна сессия)."""
+        sanitized: list[dict] = []
+        total_counts: dict[str, int] = {}
+        for msg in messages:
+            content = msg.get("content") if isinstance(msg, dict) else None
+            if not isinstance(content, str) or not content:
+                sanitized.append(msg)
+                continue
+            result = self.pipeline.sanitize(
+                CheckRequest(
+                    text=content,
+                    user=user,
+                    channel=channel,
+                    session_id=session_id,
+                    dry_run=True,
+                )
+            )
+            if result.verdict == Verdict.BLOCKED:
+                raise ApiError(403, result.message or "Заблокировано политикой")
+            if result.verdict == Verdict.FAIL_CLOSED:
+                raise ApiError(502, result.message or "Fail-closed")
+            for k, v in result.entity_counts.items():
+                total_counts[k] = total_counts.get(k, 0) + v
+            sanitized.append({**msg, "content": result.masked_text})
+        return sanitized, total_counts
+
+    def _chat_completions(self, channel: Channel = Channel.EGRESS) -> None:
         """Канал «Egress»: внутренние приложения/RAG/пайплайны меняют base_url
-        на шлюз; каждое сообщение проходит конвейер, ответ детокенизируется."""
+        на шлюз; каждое сообщение проходит конвейер, ответ детокенизируется.
+
+        stream=true: ответ уходит клиенту по частям (SSE в формате OpenAI),
+        значения восстанавливаются на лету StreamDetokenizer'ом."""
         body = self._read_json()
         messages = body.get("messages")
         if not isinstance(messages, list) or not messages:
             raise ApiError(400, "Требуется непустой массив messages")
-        if body.get("stream"):
-            raise ApiError(
-                400,
-                "Стриминг в MVP не поддерживается: детокенизация требует полного ответа.",
-            )
 
         session_id = uuid.uuid4().hex
         user = str(body.get("user") or "egress-app")
-        sanitized_messages: list[dict] = []
-        total_counts: dict[str, int] = {}
+        model = body.get("model")
         try:
-            for msg in messages:
-                content = msg.get("content") if isinstance(msg, dict) else None
-                if not isinstance(content, str) or not content:
-                    sanitized_messages.append(msg)
-                    continue
-                result = self.pipeline.sanitize(
-                    CheckRequest(
-                        text=content,
-                        user=user,
-                        channel=Channel.EGRESS,
-                        session_id=session_id,
-                        dry_run=True,
-                    )
-                )
-                if result.verdict == Verdict.BLOCKED:
-                    raise ApiError(403, result.message or "Заблокировано политикой")
-                if result.verdict == Verdict.FAIL_CLOSED:
-                    raise ApiError(502, result.message or "Fail-closed")
-                for k, v in result.entity_counts.items():
-                    total_counts[k] = total_counts.get(k, 0) + v
-                sanitized_messages.append(
-                    {**msg, "content": result.masked_text}
-                )
-
+            sanitized_messages, total_counts = self._sanitize_messages(
+                messages, user, session_id, channel
+            )
             # Э3: чувствительные запросы — на выделенный провайдер политики
             provider = None
             if total_counts and self.pipeline.policy.policy.sensitive_provider:
                 provider = self.pipeline.policy.policy.sensitive_provider
+
+            if body.get("stream"):
+                self._stream_chat(
+                    sanitized_messages, model, provider, session_id, total_counts
+                )
+                return
+
             try:
                 answer = self.pipeline.forwarder.chat(
-                    sanitized_messages, model=body.get("model"), provider=provider
+                    sanitized_messages, model=model, provider=provider
                 )
             except Exception as e:
                 raise ApiError(502, f"Провайдер недоступен: {e}")
@@ -394,7 +408,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 "id": f"aigate-{session_id}",
                 "object": "chat.completion",
                 "created": int(time.time()),
-                "model": body.get("model") or self.pipeline.forwarder.provider_name,
+                "model": model or self.pipeline.forwarder.provider_name,
                 "choices": [
                     {
                         "index": 0,
@@ -408,6 +422,74 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 },
             },
         )
+
+    def _stream_chat(
+        self,
+        messages: list[dict],
+        model: str | None,
+        provider: str | None,
+        session_id: str,
+        total_counts: dict[str, int],
+    ) -> None:
+        forwarder = self.pipeline.forwarder
+        try:
+            if hasattr(forwarder, "chat_stream"):
+                chunks = iter(forwarder.chat_stream(messages, model=model, provider=provider))
+                first = next(chunks, "")
+            else:  # провайдер без потоков: весь ответ одним куском
+                first, chunks = forwarder.chat(messages, model=model, provider=provider), iter(())
+        except Exception as e:
+            # до первого байта ответа ещё можно вернуть обычную ошибку
+            raise ApiError(502, f"Провайдер недоступен: {e}")
+
+        completion_id = f"aigate-{session_id}"
+        created = int(time.time())
+        model_name = model or forwarder.provider_name
+
+        def event(delta: dict, finish: str | None = None, extra: dict | None = None) -> bytes:
+            payload = {
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model_name,
+                "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+            }
+            if extra:
+                payload.update(extra)
+            return b"data: " + json.dumps(payload, ensure_ascii=False).encode() + b"\n\n"
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Connection", "close")  # конец потока = закрытие соединения
+        self.end_headers()
+        self.close_connection = True
+
+        detok = StreamDetokenizer(self.pipeline.store, session_id)
+        try:
+            self.wfile.write(event({"role": "assistant", "content": ""}))
+            for chunk in itertools.chain([first], chunks):
+                text = detok.feed(chunk)
+                if text:
+                    self.wfile.write(event({"content": text}))
+                    self.wfile.flush()
+            tail = detok.flush()
+            if tail:
+                self.wfile.write(event({"content": tail}))
+            self.wfile.write(
+                event({}, "stop", {"aigate": {"masked_entities": total_counts}})
+            )
+            self.wfile.write(b"data: [DONE]\n\n")
+        except (BrokenPipeError, ConnectionResetError):
+            logger.info("Клиент закрыл поток %s", completion_id)
+        except Exception as e:
+            logger.warning("Поток %s прерван: %s", completion_id, e)
+            err = {"error": {"message": f"Поток прерван: {e}", "type": "provider_error"}}
+            try:
+                self.wfile.write(b"data: " + json.dumps(err, ensure_ascii=False).encode() + b"\n\n")
+            except OSError:
+                pass
 
     def _send_static(self, name: str) -> None:
         path = (_STATIC_DIR / name).resolve()

@@ -42,3 +42,37 @@ def detokenize(text: str, store: MappingStore, session_id: str) -> str:
 
 def contains_tokens(text: str) -> bool:
     return bool(_TOKEN_RE.search(text))
+
+
+# Хвост, который может оказаться началом токена: «[», «[PER», «[PERSON_1».
+_PARTIAL_TOKEN_RE = re.compile(r"\[[A-Z_]*\d*$")
+_MAX_TOKEN_LEN = max(len(t.value) for t in EntityType) + 12  # «[», «_», до 10 цифр, «]»
+
+
+class StreamDetokenizer:
+    """Обратная подстановка для потокового ответа (SSE).
+
+    Провайдер режет текст на куски где угодно, в том числе посреди токена:
+    «Клиент [PERS» + «ON_1] просит». Выпускать «[PERS» нельзя — пользователь
+    увидит обрывок метки, а следующий кусок уже не с чем будет склеить.
+    Поэтому хвост, похожий на начало токена, придерживается до следующего
+    куска, а всё остальное отдаётся сразу с восстановленными значениями.
+    """
+
+    def __init__(self, store: MappingStore, session_id: str):
+        self._store = store
+        self._session_id = session_id
+        self._pending = ""
+
+    def feed(self, chunk: str) -> str:
+        text = self._pending + chunk
+        m = _PARTIAL_TOKEN_RE.search(text)
+        if m and len(text) - m.start() <= _MAX_TOKEN_LEN:
+            self._pending, text = text[m.start() :], text[: m.start()]
+        else:
+            self._pending = ""
+        return detokenize(text, self._store, self._session_id)
+
+    def flush(self) -> str:
+        text, self._pending = self._pending, ""
+        return detokenize(text, self._store, self._session_id)
