@@ -1,5 +1,14 @@
 # AI-Gate DLP browser extension — changelog
 
+## 0.3.6
+- "Copy the last reply with real values" did nothing on some pages. Two causes:
+  the browser allows clipboard writes only right after a click, and the
+  extension first waited for the gateway; and some sites refuse the Clipboard
+  API by permissions policy (NotAllowedError). The last reply is now restored
+  in advance while the panel refreshes, so the click writes at once; if the
+  Clipboard API is refused, the text is put into a copy event directly (the
+  site's own copy listeners do not see it).
+
 ## 0.3.5
 - The values panel can be minimised to a small "AI-Gate · N" badge (click to
   expand), hidden until the next reply with new placeholders, and dragged by

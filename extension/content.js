@@ -624,17 +624,46 @@
       if (host.style.left) place(parseFloat(host.style.left), parseFloat(host.style.top));
     });
 
+    // Запасной способ, когда Clipboard API отказал (сайт запрещает его
+    // политикой разрешений или вкладка не в фокусе): команда «Копировать»,
+    // а текст подкладывается прямо в событие copy — не зависит от выделения.
+    function copyFallback(text) {
+      let written = false;
+      const onCopy = (e) => {
+        e.clipboardData.setData("text/plain", text);
+        e.preventDefault();
+        e.stopImmediatePropagation(); // сайт не должен видеть и подменять этот текст
+        written = true;
+      };
+      window.addEventListener("copy", onCopy, true);
+      try { document.execCommand("copy"); } catch (_) { /* written останется false */ }
+      window.removeEventListener("copy", onCopy, true);
+      return written;
+    }
+
+    // v0.3.6: браузер разрешает запись в буфер только сразу после клика. Если
+    // сначала ждать ответа шлюза, разрешение успевает истечь и копирование
+    // молча не происходит. Поэтому ответ расшифровывается заранее (refreshPanel),
+    // а по клику текст пишется в буфер сразу.
     root.querySelector(".copy").addEventListener("click", async () => {
       const text = lastAssistantText();
       if (!text) return notify("ответ не найден на странице", "info");
-      const restored = await restoreText(text);
-      if (restored == null) return notify("шлюз недоступен, расшифровать не удалось", "error");
+      let restored = lastRestored.source === text ? lastRestored.text : null;
+      if (restored == null) {
+        restored = await restoreText(text); // ответ ещё не был расшифрован заранее
+        if (restored == null) return notify("шлюз недоступен, расшифровать не удалось", "error");
+      }
+      let ok = false;
       try {
         await navigator.clipboard.writeText(restored);
-        notify("ответ с настоящими данными скопирован", "ok");
-      } catch (_) {
-        notify("браузер не дал доступ к буферу обмена", "error");
+        ok = true;
+      } catch (e) {
+        log("Clipboard API отказал:", e && e.name);
+        ok = copyFallback(restored);
       }
+      notify(ok ? "ответ с настоящими данными скопирован"
+        : "браузер не дал скопировать. Выделите ответ на странице и скопируйте вручную: значения подставит панель.",
+        ok ? "ok" : "error");
     });
     return {
       host,
@@ -646,6 +675,7 @@
 
   let currentTokensKey = "";
   let building = null;
+  let lastRestored = { source: null, text: null }; // последний ответ, расшифрованный заранее
 
   async function refreshPanel() {
     const tokens = [...new Set([...visibleText().matchAll(TOKEN_RE_G)].map((m) => m[0]))];
@@ -690,6 +720,13 @@
       })
     );
     log("расшифровано меток:", known.length);
+
+    // заранее расшифровать последний ответ, чтобы кнопка копировала без ожидания
+    const answer = lastAssistantText();
+    if (answer && answer !== lastRestored.source) {
+      const text = await restoreText(answer);
+      if (text != null) lastRestored = { source: answer, text };
+    }
   }
 
   new MutationObserver(scheduleRestore).observe(document.body, {
