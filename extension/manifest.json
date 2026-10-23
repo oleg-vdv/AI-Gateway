@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AI-Gate DLP",
-  "version": "0.3.0",
+  "version": "0.3.6",
   "description": "Скрывает ИИН, ФИО, телефоны, адреса, счета и ключи перед отправкой в ChatGPT, Claude и Gemini. Работает со шлюзом AI-Gate.",
   "icons": {
     "16": "icons/icon-16.png",

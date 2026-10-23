@@ -3,7 +3,8 @@
 // Перехват отправки в capture-фазе ДО того, как страница обработает Enter
 // или клик по кнопке. Текст уходит на шлюз (/v1/check, dry_run), поле ввода
 // заменяется обезличенным текстом, после чего отправка повторяется.
-// Ответ ассистента детокенизируется через /v1/restore прямо в DOM.
+// Метки в ответе расшифровываются через /v1/restore в панели расширения;
+// страница сайта не меняется (v0.3.2).
 //
 // Fail-closed: если шлюз недоступен или вернул block/fail_closed,
 // отправка НЕ происходит.
@@ -40,10 +41,13 @@
   // вскоре после нашей отправки, новый адрес наследует сессию.
   let lastSend = null; // { key, time }
 
-  // ChatGPT сначала даёт диалогу временный адрес /c/WEB:<uuid>, а после
-  // ответа сервера заменяет его настоящим /c/<id>. Временный адрес всегда
-  // передаёт сессию дальше, сколько бы времени ни прошло.
-  const TEMP_PATH_RE = /\/c\/WEB:/i;
+  // ChatGPT сначала даёт диалогу временный адрес, а после ответа сервера
+  // заменяет его настоящим /c/<uuid>. Временные адреса менялись:
+  // /c/WEB:<uuid>, затем /c/local-chatgpt:<uuid> (в адресной строке —
+  // %3A вместо двоеточия). Общее у них — двоеточие в идентификаторе, у
+  // настоящего адреса его нет. Временный адрес всегда передаёт сессию
+  // дальше, сколько бы времени ни прошло.
+  const TEMP_PATH_RE = /\/c\/[^/]*(?::|%3A)/i;
 
   setInterval(() => {
     if (location.pathname === lastPath) return;
@@ -98,6 +102,78 @@
       if (b) return b;
     }
     return null;
+  }
+
+  // v0.3.4: разметка сайтов меняется (Claude сменил поле ввода, и 0.3.3 его не
+  // узнал — сообщение ушло без маскировки). Поэтому поле ввода определяется не
+  // только по известным селекторам, но и по тому, где пользователь печатает:
+  // любое редактируемое поле, похожее на поле сообщения.
+
+  const EDITABLE =
+    'textarea, [contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"]';
+  const CHAT_HINT_RE = /message|prompt|chat|ask|reply|claude|gemini|сообщ|спрос|напиш|вопрос|ответ/i;
+  const SEND_HINT_RE = /send|submit|отправ/i;
+
+  function editableRoot(node) {
+    let el = node && (node.nodeType === 1 ? node : node.parentElement);
+    if (!el || el.closest("aigate-panel, #aigate-toast")) return null;
+    el = el.closest(EDITABLE);
+    if (!el) return null;
+    // внешний редактируемый блок (у ProseMirror/Tiptap вложенные узлы тоже editable)
+    let up = el.parentElement && el.parentElement.closest(EDITABLE);
+    while (up) {
+      el = up;
+      up = el.parentElement && el.parentElement.closest(EDITABLE);
+    }
+    return el;
+  }
+
+  function isSendButton(btn) {
+    if (!btn) return false;
+    if (btn.matches(SEND_SELECTORS.join(","))) return true;
+    const hint = [btn.getAttribute("aria-label"), btn.getAttribute("data-testid"), btn.title]
+      .filter(Boolean).join(" ");
+    if (SEND_HINT_RE.test(hint)) return true;
+    return btn.type === "submit" && !!btn.form && !!btn.form.querySelector(EDITABLE);
+  }
+
+  // Поле похоже на поле сообщения ИИ: известный селектор, рядом кнопка
+  // отправки или подсказка вроде «Напишите сообщение». Обычные редакторы на
+  // странице (документ «Текст» в ChatGPT) под это не подходят — Enter в них
+  // просто перевод строки.
+  function isChatInput(el) {
+    if (!el) return false;
+    if (el === findComposer()) return true;
+    const hint = ["aria-label", "placeholder", "data-placeholder", "id", "name", "data-testid"]
+      .map((a) => el.getAttribute(a) || "").join(" ");
+    if (CHAT_HINT_RE.test(hint)) return true;
+    // Ближайший общий блок с кнопкой отправки, в котором нет других
+    // редакторов: так поле сообщения отличается от редактора документа,
+    // который просто лежит на той же странице.
+    let scope = el.parentElement;
+    for (let depth = 0; scope && depth < 5; depth++, scope = scope.parentElement) {
+      const editors = new Set([...scope.querySelectorAll(EDITABLE)].map(editableRoot));
+      editors.delete(null);
+      if (editors.size > 1) return false;
+      if ([...scope.querySelectorAll("button")].some(isSendButton)) return true;
+    }
+    return false;
+  }
+
+  let lastChatInput = null;
+  window.addEventListener("focusin", (e) => {
+    const root = editableRoot(e.target);
+    if (root && isChatInput(root)) lastChatInput = root;
+  }, true);
+
+  function activeComposer() {
+    const known = findComposer();
+    if (known && known.isConnected) return known;
+    if (lastChatInput && lastChatInput.isConnected) return lastChatInput;
+    const candidates = [...document.querySelectorAll(EDITABLE)]
+      .map(editableRoot)
+      .filter((el) => el && el.offsetParent !== null && isChatInput(el));
+    return candidates.length ? candidates[candidates.length - 1] : null;
   }
 
   function composerText(el) {
@@ -171,10 +247,16 @@
     return new Promise((r) => requestAnimationFrame(() => setTimeout(r, 30)));
   }
 
+  function sendButtonFor(composer) {
+    const scope = composer.closest("form") || composer.closest("fieldset");
+    const near = scope && [...scope.querySelectorAll("button")].find(isSendButton);
+    return near || findSendButton();
+  }
+
   async function resubmit(composer, clickedButton) {
     composer.setAttribute(MARK, "1");
     await nextFrame(); // даём React включить кнопку после смены текста
-    const btn = clickedButton || findSendButton();
+    const btn = clickedButton || sendButtonFor(composer);
     if (btn && !btn.disabled) {
       btn.click();
     } else {
@@ -219,29 +301,70 @@
     }
   }
 
-  document.addEventListener("keydown", (e) => {
-    if (e.key !== "Enter" || e.shiftKey || e.isComposing) return;
-    const composer = findComposer();
-    if (!composer || !composer.contains(e.target)) return;
-    if (composer.getAttribute(MARK)) return;
-    if (processing) { e.preventDefault(); e.stopImmediatePropagation(); return; }
-    if (!composerText(composer).trim()) return;
+  // Слушатели на window в фазе захвата: это самая ранняя точка, раньше
+  // любых обработчиков сайта (в том числе повешенных на document).
+
+  function stop(e) {
     e.preventDefault();
     e.stopImmediatePropagation();
-    interceptAndResubmit(composer, null);
+  }
+
+  window.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" || e.shiftKey || e.isComposing) return;
+    const root = editableRoot(e.target);
+    if (!root || !isChatInput(root)) return; // перевод строки в обычном редакторе
+    if (root.getAttribute(MARK)) return;
+    if (processing) return stop(e);
+    if (!composerText(root).trim()) return;
+    stop(e);
+    interceptAndResubmit(root, null);
   }, true);
 
-  document.addEventListener("click", (e) => {
-    const btn = e.target.closest(SEND_SELECTORS.join(","));
-    if (!btn) return;
-    const composer = findComposer();
-    if (!composer || composer.getAttribute(MARK)) return;
-    if (processing) { e.preventDefault(); e.stopImmediatePropagation(); return; }
+  window.addEventListener("click", (e) => {
+    const btn = e.target.closest && e.target.closest("button");
+    if (!isSendButton(btn)) return;
+    const scope = btn.closest("form") || btn.closest("fieldset");
+    const inScope = scope && [...scope.querySelectorAll(EDITABLE)].map(editableRoot).find(Boolean);
+    const composer = inScope || activeComposer();
+    if (!composer) {
+      // кнопка отправки есть, а поля, откуда она отправляет, расширение не нашло:
+      // не знаем, что уйдёт, — значит, не отпускаем (fail-closed)
+      stop(e);
+      notify("не удалось найти поле сообщения на этой странице. Отправка остановлена, " +
+        "чтобы данные не ушли без проверки. Обновите страницу или расширение.", "error");
+      return;
+    }
+    if (composer.getAttribute(MARK)) return;
+    if (processing) return stop(e);
     if (!composerText(composer).trim()) return;
-    e.preventDefault();
-    e.stopImmediatePropagation();
+    stop(e);
     interceptAndResubmit(composer, btn);
   }, true);
+
+  window.addEventListener("submit", (e) => {
+    const root = [...e.target.querySelectorAll(EDITABLE)].map(editableRoot).find(Boolean);
+    if (!root || root.getAttribute(MARK) || !composerText(root).trim()) return;
+    stop(e);
+    if (!processing) interceptAndResubmit(root, null);
+  }, true);
+
+  // Сторож: если на сайте ИИ расширение не видит ни одного поля сообщения,
+  // защита фактически не работает — об этом нужно сказать, а не молчать.
+  log("активно на", location.host, "версия", chrome.runtime.getManifest().version);
+  let warned = false;
+  setInterval(() => {
+    const ok = !!activeComposer();
+    if (!ok && !warned && document.readyState === "complete") {
+      warned = true;
+      log("поле сообщения не найдено на", location.host);
+      notify("не вижу поле сообщения на этой странице — защита может не работать. " +
+        "Не отправляйте персональные данные и сообщите администратору.", "error");
+      sendToBackground({ type: "AIGATE_STATUS", ok: false });
+    } else if (ok && warned) {
+      warned = false;
+      sendToBackground({ type: "AIGATE_STATUS", ok: true });
+    }
+  }, 3000);
 
   // Файлы расширение не проверяет: предупреждаем, чтобы это не было сюрпризом.
   document.addEventListener("change", (e) => {
@@ -255,94 +378,354 @@
     }
   }, true);
 
-  // --- детокенизация ответов -------------------------------------------------------
-  // Наблюдатель работает всё время, пока открыта страница: сайты перерисовывают
-  // сообщения (React), и восстановленный текст может вернуться к токенам.
+  // --- расшифровка меток ---------------------------------------------------------
+  //
+  // v0.3.2: настоящие значения БОЛЬШЕ НЕ ВПИСЫВАЮТСЯ в страницу сайта.
+  // Раньше расширение заменяло [PERSON_1] на имя прямо в DOM ответа. ChatGPT
+  // хранит диалог и у себя в браузере и синхронизирует его, а редактируемые
+  // блоки ответа (карточка «Текст») воспринимают изменение DOM как правку
+  // пользователя и сохраняют её на сервер. Так подставленные значения
+  // уходили к OpenAI — уже после ответа, в обход маскировки.
+  //
+  // Теперь страница сайта не меняется вообще. Метки остаются метками, а их
+  // значения показываются в собственной панели расширения: она живёт в
+  // закрытом shadow DOM вне <body>, сайт её не видит и сохранить не может.
 
   let restoreTimer = null;
 
   function scheduleRestore() {
     clearTimeout(restoreTimer);
-    restoreTimer = setTimeout(restoreVisibleTokens, 900);
+    restoreTimer = setTimeout(refreshPanel, 900);
   }
 
   // Список типов совпадает с EntityType шлюза (gateway/models.py)
   const TOKEN_RE_G =
     /\[(?:CONFIDENTIAL|BIRTHDATE|ADDRESS|PERSON|SECRET|AMOUNT|ID_DOC|PHONE|EMAIL|PLATE|IBAN|CARD|IIN|BIN)_\d+\]/g;
 
-  function shouldSkip(node) {
-    const parent = node.parentElement;
-    if (!parent) return true;
-    if (parent.closest("#aigate-toast, script, style, noscript")) return true;
-    // Реальные данные никогда не возвращаются в поле ввода сообщения.
-    // Остальные редактируемые блоки (например, карточка-черновик ChatGPT)
-    // восстанавливаем: это ответ модели, а не то, что уйдёт наружу.
-    const composer = findComposer();
-    if (composer && composer.contains(node)) return true;
-    return false;
-  }
+  const MESSAGE_SELECTORS = [
+    '[data-message-author-role="assistant"]', // ChatGPT
+    ".font-claude-message", // Claude
+    '[data-is-streaming]', // Claude (новая разметка)
+    "message-content", // Gemini
+    "model-response",
+  ];
 
-  // Сайты могут разбить токен на несколько узлов разметки:
-  // "[" + "PERSON_1" + "]" в разных <span>. Поэтому ищем токены в склеенном
-  // тексте и затем раскладываем замену обратно по исходным узлам.
-  async function restoreVisibleTokens() {
+  // Текст страницы без поля ввода. Токены могут быть разбиты на несколько
+  // узлов разметки ("[" + "PERSON_1" + "]"), поэтому ищем в склеенном тексте.
+  function visibleText() {
+    const composer = findComposer();
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-    const nodes = [];
-    const starts = [];
     let full = "";
     while (walker.nextNode()) {
       const n = walker.currentNode;
-      if (!n.nodeValue || shouldSkip(n)) continue;
-      nodes.push(n);
-      starts.push(full.length);
+      if (!n.nodeValue) continue;
+      if (composer && composer.contains(n)) continue;
+      if (n.parentElement && n.parentElement.closest("script, style, noscript")) continue;
       full += n.nodeValue;
     }
-    const matches = [...full.matchAll(TOKEN_RE_G)];
-    if (!matches.length) return;
+    return full;
+  }
 
-    const unique = [...new Set(matches.map((m) => m[0]))];
-    const resp = await sendToBackground({
-      type: "AIGATE_RESTORE",
-      convKey: convKey(),
-      text: unique.join(SEP),
-    });
+  // Последний ответ ассистента. Разметка у сайтов разная и меняется: обычное
+  // сообщение ChatGPT помечено data-message-author-role, а карточка «Текст»
+  // (документ в ответе) — нет. Поэтому три попытки по убыванию точности.
+  function lastAssistantText() {
+    for (const sel of MESSAGE_SELECTORS) {
+      const all = [...document.querySelectorAll(sel)].filter((el) => el.innerText.trim());
+      if (all.length) return all[all.length - 1].innerText;
+    }
+    // ход диалога ChatGPT — <article>; ответ — последний ход без сообщения пользователя
+    const turns = [...document.querySelectorAll("main article")].filter(
+      (a) => !a.querySelector('[data-message-author-role="user"]') && a.innerText.trim()
+    );
+    if (turns.length) {
+      // внутри хода — сам текст ответа, без заголовков и подписей кнопок
+      const turn = turns[turns.length - 1];
+      const body = [...turn.querySelectorAll('.markdown, [contenteditable="true"], .ProseMirror')]
+        .filter((el) => el.innerText.trim());
+      return (body.length ? body[body.length - 1] : turn).innerText;
+    }
+    // последний блок с меткой вне поля ввода и вне сообщений пользователя
+    const composer = findComposer();
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    let last = null;
+    while (walker.nextNode()) {
+      const n = walker.currentNode;
+      const el = n.parentElement;
+      if (!el || (composer && composer.contains(n))) continue;
+      if (el.closest('[data-message-author-role="user"]')) continue;
+      if (/\[[A-Z_]+_\d+\]/.test(n.nodeValue)) last = el;
+    }
+    const block = last && last.closest("p, li, div, section");
+    return block ? block.innerText : "";
+  }
+
+  async function restoreText(text) {
+    const resp = await sendToBackground({ type: "AIGATE_RESTORE", convKey: convKey(), text });
     if (!resp.ok) {
-      log("восстановление не выполнено:", resp.error, "| ключ:", convKey(), "| токены:", unique.join(" "));
+      log("расшифровка не выполнена:", resp.error, "| ключ:", convKey());
+      return null;
+    }
+    return resp.result.text;
+  }
+
+  // --- панель (shadow DOM вне <body>) ---
+  //
+  // v0.3.5: панель можно свернуть в значок, скрыть до следующего ответа и
+  // перетащить за заголовок. Положение и «свёрнута ли» запоминаются для
+  // каждого сайта в chrome.storage.local — хранилище расширения, а не сайта.
+
+  let panel = null;
+  let hiddenFor = null; // набор меток, для которого пользователь скрыл панель
+  const STATE_KEY = "panel:" + location.host;
+
+  function loadPanelState() {
+    return new Promise((resolve) => {
+      try {
+        chrome.storage.local.get(STATE_KEY, (data) => resolve((data && data[STATE_KEY]) || {}));
+      } catch (_) {
+        resolve({});
+      }
+    });
+  }
+
+  function savePanelState(state) {
+    try {
+      chrome.storage.local.set({ [STATE_KEY]: state });
+    } catch (_) { /* расширение перезагружено — положение не сохранится, не страшно */ }
+  }
+
+  async function buildPanel() {
+    const state = await loadPanelState();
+    const host = document.createElement("aigate-panel");
+    host.style.cssText = "all:initial;position:fixed;z-index:2147483647";
+    // вне <body>: ни React, ни редакторы сайта не наблюдают эту часть документа
+    document.documentElement.appendChild(host);
+    const root = host.attachShadow({ mode: "closed" });
+    root.innerHTML = `
+      <style>
+        .box { font: 13px/1.45 system-ui, "Segoe UI", sans-serif; color: #1c2733; background: #fbfcfd;
+               border: 1px solid #cfd6de; border-radius: 10px; box-shadow: 0 6px 20px rgba(28,39,51,.18);
+               width: 290px; max-height: 50vh; display: flex; flex-direction: column; }
+        header { display: flex; align-items: center; gap: 6px; padding: 6px 6px 6px 10px;
+                 border-bottom: 1px solid #e3e8ee; cursor: grab; user-select: none; touch-action: none; }
+        header.dragging { cursor: grabbing; }
+        header b { font-weight: 650; flex: 1; }
+        .count { color: #4b3f9e; font-weight: 600; }
+        .icon { background: transparent; color: #5b6876; border: 0; border-radius: 6px; width: 26px; height: 26px;
+                font: 600 16px/1 system-ui, sans-serif; cursor: pointer; padding: 0; }
+        .icon:hover { background: #e6e3f6; color: #4b3f9e; }
+        .list { overflow: auto; padding: 6px 10px; margin: 0; list-style: none; }
+        .list li { display: flex; gap: 8px; padding: 3px 0; border-bottom: 1px dashed #e3e8ee; }
+        .tok { color: #4b3f9e; background: #e6e3f6; border-radius: 3px; padding: 0 3px;
+               font: 12px ui-monospace, Consolas, monospace; white-space: nowrap; align-self: flex-start; }
+        .val { overflow-wrap: anywhere; }
+        .actions { padding: 8px 10px; border-top: 1px solid #e3e8ee; display: flex; flex-direction: column; gap: 4px; }
+        .copy { font: inherit; background: #4b3f9e; color: #fff; border: 0; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+        button:focus-visible { outline: 2px solid #4b3f9e; outline-offset: 2px; }
+        .note { color: #5b6876; font-size: 12px; }
+        .pill { display: none; font: 600 13px/1 system-ui, "Segoe UI", sans-serif; color: #fff; background: #4b3f9e;
+                border: 0; border-radius: 999px; padding: 8px 12px; box-shadow: 0 4px 14px rgba(28,39,51,.25);
+                cursor: grab; user-select: none; touch-action: none; }
+        .collapsed .box { display: none; }
+        .collapsed .pill { display: inline-block; }
+      </style>
+      <div class="wrap">
+        <div class="box" role="dialog" aria-label="AI-Gate: настоящие значения">
+          <header title="Перетащите, чтобы передвинуть">
+            <b>AI-Gate: настоящие значения</b><span class="count"></span>
+            <button type="button" class="icon min" title="Свернуть в значок" aria-label="Свернуть в значок">–</button>
+            <button type="button" class="icon close" title="Скрыть до следующего ответа" aria-label="Скрыть до следующего ответа">×</button>
+          </header>
+          <ul class="list"></ul>
+          <div class="actions">
+            <button type="button" class="copy">Скопировать последний ответ с настоящими данными</button>
+            <span class="note">Сайт видит только метки. Значения показаны здесь и только вам.</span>
+          </div>
+        </div>
+        <button type="button" class="pill" title="Развернуть. Можно перетащить">AI-Gate · <span class="pill-count"></span></button>
+      </div>`;
+    const wrap = root.querySelector(".wrap");
+
+    // --- положение ---
+    function place(left, top) {
+      const w = host.offsetWidth || 290;
+      const h = host.offsetHeight || 60;
+      left = Math.max(4, Math.min(left, window.innerWidth - w - 4));
+      top = Math.max(4, Math.min(top, window.innerHeight - h - 4));
+      host.style.left = left + "px";
+      host.style.top = top + "px";
+      host.style.right = host.style.bottom = "auto";
+      return { left, top };
+    }
+    if (typeof state.left === "number") {
+      requestAnimationFrame(() => place(state.left, state.top));
+    } else {
+      host.style.right = "16px";
+      host.style.bottom = "96px";
+    }
+
+    function setCollapsed(collapsed) {
+      wrap.classList.toggle("collapsed", collapsed);
+      state.collapsed = collapsed;
+      savePanelState(state);
+      requestAnimationFrame(() => {
+        const r = host.getBoundingClientRect();
+        place(r.left, r.top); // свёрнутая/развёрнутая панель не должна уехать за край
+      });
+    }
+    wrap.classList.toggle("collapsed", !!state.collapsed);
+
+    // перетаскивание: за заголовок панели или за значок; короткий клик по значку разворачивает
+    function draggable(handle, onClick) {
+      handle.addEventListener("pointerdown", (e) => {
+        if (e.button !== 0 || (e.target.closest(".icon"))) return;
+        const r = host.getBoundingClientRect();
+        const dx = e.clientX - r.left, dy = e.clientY - r.top;
+        const sx = e.clientX, sy = e.clientY;
+        let moved = false;
+        handle.setPointerCapture(e.pointerId);
+        handle.classList.add("dragging");
+        const move = (ev) => {
+          if (!moved && Math.hypot(ev.clientX - sx, ev.clientY - sy) < 4) return;
+          moved = true;
+          place(ev.clientX - dx, ev.clientY - dy);
+        };
+        const up = () => {
+          handle.removeEventListener("pointermove", move);
+          handle.removeEventListener("pointerup", up);
+          handle.removeEventListener("pointercancel", up);
+          handle.classList.remove("dragging");
+          if (moved) {
+            const r2 = host.getBoundingClientRect();
+            state.left = r2.left;
+            state.top = r2.top;
+            savePanelState(state);
+          } else if (onClick) {
+            onClick();
+          }
+        };
+        handle.addEventListener("pointermove", move);
+        handle.addEventListener("pointerup", up);
+        handle.addEventListener("pointercancel", up);
+      });
+    }
+    draggable(root.querySelector("header"), null);
+    draggable(root.querySelector(".pill"), () => setCollapsed(false));
+    root.querySelector(".pill").addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setCollapsed(false); }
+    });
+    root.querySelector(".min").addEventListener("click", () => setCollapsed(true));
+    root.querySelector(".close").addEventListener("click", () => {
+      hiddenFor = currentTokensKey;
+      host.style.display = "none";
+    });
+    window.addEventListener("resize", () => {
+      if (host.style.left) place(parseFloat(host.style.left), parseFloat(host.style.top));
+    });
+
+    // Запасной способ, когда Clipboard API отказал (сайт запрещает его
+    // политикой разрешений или вкладка не в фокусе): команда «Копировать»,
+    // а текст подкладывается прямо в событие copy — не зависит от выделения.
+    function copyFallback(text) {
+      let written = false;
+      const onCopy = (e) => {
+        e.clipboardData.setData("text/plain", text);
+        e.preventDefault();
+        e.stopImmediatePropagation(); // сайт не должен видеть и подменять этот текст
+        written = true;
+      };
+      window.addEventListener("copy", onCopy, true);
+      try { document.execCommand("copy"); } catch (_) { /* written останется false */ }
+      window.removeEventListener("copy", onCopy, true);
+      return written;
+    }
+
+    // v0.3.6: браузер разрешает запись в буфер только сразу после клика. Если
+    // сначала ждать ответа шлюза, разрешение успевает истечь и копирование
+    // молча не происходит. Поэтому ответ расшифровывается заранее (refreshPanel),
+    // а по клику текст пишется в буфер сразу.
+    root.querySelector(".copy").addEventListener("click", async () => {
+      const text = lastAssistantText();
+      if (!text) return notify("ответ не найден на странице", "info");
+      let restored = lastRestored.source === text ? lastRestored.text : null;
+      if (restored == null) {
+        restored = await restoreText(text); // ответ ещё не был расшифрован заранее
+        if (restored == null) return notify("шлюз недоступен, расшифровать не удалось", "error");
+      }
+      let ok = false;
+      try {
+        await navigator.clipboard.writeText(restored);
+        ok = true;
+      } catch (e) {
+        log("Clipboard API отказал:", e && e.name);
+        ok = copyFallback(restored);
+      }
+      notify(ok ? "ответ с настоящими данными скопирован"
+        : "браузер не дал скопировать. Выделите ответ на странице и скопируйте вручную: значения подставит панель.",
+        ok ? "ok" : "error");
+    });
+    return {
+      host,
+      list: root.querySelector(".list"),
+      count: root.querySelector(".count"),
+      pillCount: root.querySelector(".pill-count"),
+    };
+  }
+
+  let currentTokensKey = "";
+  let building = null;
+  let lastRestored = { source: null, text: null }; // последний ответ, расшифрованный заранее
+
+  async function refreshPanel() {
+    const tokens = [...new Set([...visibleText().matchAll(TOKEN_RE_G)].map((m) => m[0]))];
+    if (!tokens.length) {
+      if (panel) panel.host.style.display = "none";
       return;
     }
-    const restored = resp.result.text.split(SEP);
-    if (restored.length !== unique.length) return;
-    log("восстановлено токенов:", unique.length);
-    const value = new Map(unique.map((t, i) => [t, restored[i]]));
-
-    // индекс узла, в который попадает позиция pos склеенного текста
-    function locate(pos) {
-      let lo = 0, hi = starts.length - 1;
-      while (lo < hi) {
-        const mid = (lo + hi + 1) >> 1;
-        if (starts[mid] <= pos) lo = mid; else hi = mid - 1;
-      }
-      return lo;
+    const restored = await restoreText(tokens.join(SEP));
+    if (restored == null) return;
+    const values = restored.split(SEP);
+    if (values.length !== tokens.length) return;
+    const known = tokens
+      .map((t, i) => [t, values[i]])
+      .filter(([t, v]) => v && v !== t); // шлюз не знает токен: другой диалог или истёк срок
+    if (!known.length) {
+      if (panel) panel.host.style.display = "none";
+      return;
     }
+    currentTokensKey = known.map(([t]) => t).sort().join(" ");
+    if (!panel || !panel.host.isConnected) {
+      building = building || buildPanel();
+      panel = await building;
+      building = null;
+    }
+    // скрыта пользователем — до тех пор, пока не появятся новые метки
+    if (hiddenFor !== null && hiddenFor === currentTokensKey) return;
+    hiddenFor = null;
+    panel.host.style.display = "block";
+    panel.count.textContent = String(known.length);
+    panel.pillCount.textContent = String(known.length);
+    panel.list.replaceChildren(
+      ...known.map(([t, v]) => {
+        const li = document.createElement("li");
+        const tok = document.createElement("span");
+        tok.className = "tok";
+        tok.textContent = t;
+        const val = document.createElement("span");
+        val.className = "val";
+        val.textContent = v;
+        li.append(tok, val);
+        return li;
+      })
+    );
+    log("расшифровано меток:", known.length);
 
-    // с конца, чтобы замены не сдвигали ещё не обработанные позиции
-    for (const m of matches.reverse()) {
-      const real = value.get(m[0]);
-      if (!real || real === m[0]) continue; // шлюз не знает токен (истёк TTL)
-      const a = locate(m.index);
-      const b = locate(m.index + m[0].length - 1);
-      const na = nodes[a], nb = nodes[b];
-      if (!na.isConnected || !nb.isConnected) continue;
-      const offA = m.index - starts[a];
-      const offB = m.index + m[0].length - starts[b];
-      if (a === b) {
-        na.nodeValue = na.nodeValue.slice(0, offA) + real + na.nodeValue.slice(offB);
-      } else {
-        const tail = nb.nodeValue.slice(offB);
-        na.nodeValue = na.nodeValue.slice(0, offA) + real;
-        for (let i = a + 1; i < b; i++) nodes[i].nodeValue = "";
-        nb.nodeValue = tail;
-      }
+    // заранее расшифровать последний ответ, чтобы кнопка копировала без ожидания
+    const answer = lastAssistantText();
+    if (answer && answer !== lastRestored.source) {
+      const text = await restoreText(answer);
+      if (text != null) lastRestored = { source: answer, text };
     }
   }
 

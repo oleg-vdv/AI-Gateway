@@ -9,6 +9,8 @@ from gateway.config import Settings
 from gateway.core.audit import AuditLog
 from gateway.core.detectors.custom import CustomRuleRegistry
 from gateway.core.mapping_store import MappingStore
+from gateway.core.owner_report import MonthlyScheduler, send_telegram
+from gateway.core.tenants import TenantRegistry
 from gateway.core.pipeline import Pipeline
 from gateway.core.policy import PolicyEngine
 from gateway.core.providers import MultiForwarder, ProviderConfig, ProviderRegistry
@@ -62,7 +64,18 @@ def build_pipeline(settings: Settings) -> Pipeline:
 def main() -> None:
     settings = Settings.from_env()
     pipeline = build_pipeline(settings)
-    server = make_server(pipeline, settings)
+    tenants = None
+    if settings.multi_tenant:
+        # облако: у каждого клиента свои данные, общий только форвардер оператора
+        tenants = TenantRegistry(
+            settings.tenants_path,
+            settings.tenants_data_root,
+            pipeline.forwarder,
+            mapping_ttl_seconds=settings.mapping_ttl_seconds,
+            fail_closed=settings.fail_closed,
+        )
+        logger.info("Облачный режим: клиентов %d", len(tenants.list()))
+    server = make_server(pipeline, settings, tenants)
     logger.info(
         "AI-Gate v%s: on-prem шлюз запущен на %s:%s "
         "(fail_closed=%s, провайдер=%s, semantic_guard=%s)",
@@ -73,6 +86,17 @@ def main() -> None:
         pipeline.forwarder.provider_name,
         settings.semantic_guard_mode,
     )
+    if settings.telegram_bot_token and settings.telegram_chat_id:
+        MonthlyScheduler(
+            pipeline.audit,
+            settings.report_state_path,
+            send=lambda text: send_telegram(
+                settings.telegram_bot_token, settings.telegram_chat_id, text
+            ),
+            day=settings.report_day,
+            utc_offset_hours=settings.report_utc_offset,
+        ).start()
+        logger.info("Ежемесячный отчёт в Telegram: %s-го числа", settings.report_day)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

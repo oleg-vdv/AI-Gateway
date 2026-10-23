@@ -182,6 +182,14 @@
   .found li { color: var(--muted); }
   .found li b { color: var(--graphite); font-weight: 600; }
 
+  .filebar { margin-top: 32px; padding-top: 22px; border-top: 1px dashed var(--rule); max-width: 760px; }
+  .filebar h2 { font-size: 1.1rem; font-weight: 650; margin: 0 0 4px; }
+  .filebar .hint { color: var(--muted); margin: 0; font-size: .92rem; }
+  .file-pick { position: relative; display: inline-block; }
+  .file-pick input { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; }
+  .file-pick:focus-within { outline: 2px solid var(--focus); outline-offset: 2px; }
+  a.primary { text-decoration: none; display: inline-block; }
+
   footer { margin-top: 36px; color: var(--muted); font-size: .88rem; max-width: 70ch; }
 
   @media (max-width: 760px) {
@@ -236,6 +244,19 @@
   </section>
 
   <section id="found" class="found" hidden aria-live="polite"></section>
+
+  <section class="filebar" aria-labelledby="file-title">
+    <h2 id="file-title">Обезличить файл</h2>
+    <p class="hint">Word, Excel, PDF с текстом или текстовый файл до 8 МБ. Вы получите копию с метками вместо данных — её можно загружать в ChatGPT.</p>
+    <div class="actions">
+      <label class="secondary file-pick">
+        <input id="file" type="file" accept=".docx,.xlsx,.pdf,.txt,.csv,.md,.tsv,.json,.log">
+        Выбрать файл
+      </label>
+      <a id="download" class="primary" hidden>Скачать копию</a>
+      <span id="file-status" class="status" role="status"></span>
+    </div>
+  </section>
 
   <footer>
     Ответ ИИ возвращается с настоящими значениями: шлюз подставляет их обратно у вас на компьютере. Сервис ИИ видит только метки вроде [PERSON_1].
@@ -352,8 +373,7 @@
     status.textContent = "Проверяем…";
     try {
       // относительный адрес: страница работает и за обратным прокси с префиксом
-      const url = new URL("api/preview", location.href.replace(/\/?(\?.*)?$/, "/"));
-      const resp = await fetch(url, {
+      const resp = await fetch(apiUrl("api/preview"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text })
@@ -380,6 +400,58 @@
     outgoing.innerHTML = '<span class="empty">Здесь появится текст, который получит сервис ИИ.</span>';
     input.focus();
   }
+
+  const fileInput = $("file"), download = $("download"), fileStatus = $("file-status");
+  let downloadUrl = null;
+
+  function apiUrl(path) {
+    return new URL(path, location.href.replace(/\/?(\?.*)?$/, "/"));
+  }
+
+  fileInput.addEventListener("change", async () => {
+    const file = fileInput.files[0];
+    download.hidden = true;
+    if (downloadUrl) URL.revokeObjectURL(downloadUrl);
+    if (!file) return;
+    fileStatus.className = "status";
+    fileStatus.textContent = "Проверяем «" + file.name + "»…";
+    try {
+      const buf = new Uint8Array(await file.arrayBuffer());
+      let bin = "";
+      for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+      const resp = await fetch(apiUrl("api/file"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: file.name, content_base64: btoa(bin) })
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail || "Шлюз вернул ошибку " + resp.status);
+      if (data.verdict === "blocked" || data.verdict === "fail_closed") {
+        fileStatus.className = "status error";
+        fileStatus.textContent = data.message || "Файл не удалось обезличить.";
+        return;
+      }
+      const raw = atob(data.content_base64);
+      const bytes = new Uint8Array(raw.length);
+      for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+      downloadUrl = URL.createObjectURL(new Blob([bytes]));
+      download.href = downloadUrl;
+      download.download = data.filename;
+      download.hidden = false;
+      const n = Object.values(data.entity_counts).reduce((a, b) => a + b, 0);
+      fileStatus.textContent = n
+        ? "Скрыто " + n + " " + plural(n, "значение", "значения", "значений") + ": " +
+          Object.entries(data.entity_counts).map(([t, c]) => inSentence(LABELS[t] || t) + " — " + c).join(", ") + "."
+        : "Персональных данных не найдено.";
+    } catch (e) {
+      fileStatus.className = "status error";
+      fileStatus.textContent = e.message === "Failed to fetch"
+        ? "Шлюз не отвечает. Проверьте, что он запущен, и повторите."
+        : e.message;
+    } finally {
+      fileInput.value = "";
+    }
+  });
 
   checkBtn.addEventListener("click", check);
   editBtn.addEventListener("click", edit);

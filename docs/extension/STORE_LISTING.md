@@ -23,7 +23,7 @@ Workflow & Planning (Инструменты для работы)
 • перед отправкой расширение передаёт текст на шлюз AI-Gate вашей организации или вашего компьютера;
 • шлюз заменяет данные метками: «Клиент [PERSON_1], ИИН [IIN_1]»;
 • ChatGPT, Claude или Gemini получают только метки;
-• в ответе расширение подставляет настоящие значения у вас на экране.
+• панель расширения показывает, что за каждой меткой, и копирует ответ с настоящими данными — в саму страницу сайта значения не вписываются.
 
 Что скрывается:
 • ИИН и БИН (с проверкой контрольной суммы);
@@ -42,7 +42,7 @@ Workflow & Planning (Инструменты для работы)
 
 ## Detailed description (EN)
 
-AI-Gate DLP masks personal data before it reaches ChatGPT, Claude or Gemini. National IDs (Kazakhstan IIN/BIN with checksum validation), names, phone numbers, emails, ID documents, addresses, card and IBAN numbers are replaced with placeholders like [PERSON_1] by your AI-Gate gateway. The AI service only sees placeholders, and the real values are restored in the reply on your screen. If the gateway is unreachable, nothing is sent. Requires an AI-Gate gateway (self-hosted, open source: github.com/oleg-vdv/AI-Gateway).
+AI-Gate DLP masks personal data before it reaches ChatGPT, Claude or Gemini. National IDs (Kazakhstan IIN/BIN with checksum validation), names, phone numbers, emails, ID documents, addresses, card and IBAN numbers are replaced with placeholders like [PERSON_1] by your AI-Gate gateway. The AI service only sees placeholders, and the extension's own panel shows what each placeholder stands for — real values are never written into the site's page. If the gateway is unreachable, nothing is sent. Requires an AI-Gate gateway (self-hosted, open source: github.com/oleg-vdv/AI-Gateway).
 
 ## Политика конфиденциальности (URL)
 https://github.com/oleg-vdv/AI-Gateway/blob/main/docs/extension/PRIVACY.md

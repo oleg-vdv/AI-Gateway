@@ -137,13 +137,21 @@ class ServerTestCase(unittest.TestCase):
         )
         self.assertEqual(status, 403)
 
-    def test_egress_stream_rejected(self):
-        status, _ = self._request(
-            "POST",
-            "/v1/chat/completions",
-            {"messages": [{"role": "user", "content": "hi"}], "stream": True},
+    def test_egress_stream_falls_back_to_single_chunk(self):
+        # FakeForwarder не умеет потоки: ответ приходит одним SSE-событием
+        req = urllib.request.Request(
+            self.base + "/v1/chat/completions",
+            data=json.dumps(
+                {"messages": [{"role": "user", "content": "hi"}], "stream": True}
+            ).encode(),
+            headers={"Content-Type": "application/json", "X-AIGate-Key": CHANNEL_KEY},
+            method="POST",
         )
-        self.assertEqual(status, 400)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            self.assertEqual(resp.status, 200)
+            raw = resp.read().decode()
+        self.assertIn("chat.completion.chunk", raw)
+        self.assertTrue(raw.rstrip().endswith("data: [DONE]"))
 
     def test_admin_requires_token(self):
         status, _ = self._request("GET", "/admin/api/policy", key=None)

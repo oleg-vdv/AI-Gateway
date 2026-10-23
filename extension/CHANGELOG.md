@@ -1,5 +1,60 @@
 # AI-Gate DLP browser extension — changelog
 
+## 0.3.6
+- "Copy the last reply with real values" did nothing on some pages. Two causes:
+  the browser allows clipboard writes only right after a click, and the
+  extension first waited for the gateway; and some sites refuse the Clipboard
+  API by permissions policy (NotAllowedError). The last reply is now restored
+  in advance while the panel refreshes, so the click writes at once; if the
+  Clipboard API is refused, the text is put into a copy event directly (the
+  site's own copy listeners do not see it).
+
+## 0.3.5
+- The values panel can be minimised to a small "AI-Gate · N" badge (click to
+  expand), hidden until the next reply with new placeholders, and dragged by
+  its header or by the badge. Position and minimised state are remembered per
+  site in the extension's own storage.
+
+## 0.3.4 — security fix
+- **Messages on claude.ai were sent unmasked.** The composer was found only by
+  fixed selectors; Claude's new markup matched none of them, so the Enter
+  handler returned early and the site sent the original text. Found on
+  23.10.2026 with test data.
+- The chat input is now recognised where the user types: any editable field
+  (textarea / contenteditable, outermost editor root) that has a chat hint
+  (aria-label, placeholder) or a send button in a block without other editors.
+  An ordinary document editor on the same page keeps Enter as a new line.
+- Send buttons are recognised by aria-label / data-testid / title (send,
+  submit, отправ) and by type=submit in a form with an editor.
+- Listeners moved from document to window (capture), the earliest point.
+- Fail-closed: a send button with no recognisable input stops the click;
+  if no chat input is visible on a supported site, a red warning is shown and
+  the badge turns "!".
+
+## 0.3.3
+- "Copy the last reply with real values" finds ChatGPT's "Текст" card, which
+  has no data-message-author-role: falls back to the last conversation turn
+  without a user message, then to the last block with a placeholder. Only the
+  reply text is copied, without the card's header.
+
+## 0.3.2 — security fix
+- **Real values are no longer written into the site's page.** Restoring
+  placeholders in the reply's DOM leaked them: ChatGPT keeps the conversation
+  locally and syncs it, and its editable reply blocks treat a DOM change as a
+  user edit, so the restored name, IIN and phone were saved to OpenAI after the
+  reply. Found on 23.10.2026 with test data: the conversation opened on
+  another device showed real values.
+- Instead, a panel (closed shadow root outside `<body>`) lists each visible
+  placeholder with its value and copies the last reply with real values.
+- Verification: open the conversation on another device; reloading the page in
+  the same browser is not proof.
+
+## 0.3.1
+- ChatGPT's temporary conversation address changed from `/c/WEB:<uuid>` to
+  `/c/local-chatgpt:<uuid>`; any `/c/` id with a colon is now treated as
+  temporary, so the session follows the conversation to its real address and
+  replies are restored again (was: "нет сессии для этого диалога").
+
 ## 0.3.0
 - Settings moved from `storage.sync` to `storage.local`: the channel key is no longer
   synced to the user's Google account. Existing settings are migrated on first use.

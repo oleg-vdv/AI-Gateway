@@ -174,6 +174,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       } else if (msg.type === "AIGATE_BIND") {
         await bindSession(msg.fromKey, msg.toKey);
         sendResponse({ ok: true });
+      } else if (msg.type === "AIGATE_STATUS") {
+        // content script не нашёл поле сообщения: защита на вкладке не работает
+        setBadge(tabId, !!msg.ok);
+        sendResponse({ ok: true });
       } else if (msg.type === "AIGATE_HEALTH") {
         const result = await gatewayFetch("/healthz");
         setBadge(tabId, true);

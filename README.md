@@ -5,7 +5,7 @@
 
 ![Python 3.11+](https://img.shields.io/badge/Python-3.11+-3776AB.svg)
 ![Zero dependencies](https://img.shields.io/badge/dependencies-stdlib_only-9ece6a.svg)
-![Tests](https://img.shields.io/badge/tests-172-success.svg)
+![Tests](https://img.shields.io/badge/tests-214-success.svg)
 
 *[Русская версия](docs/README.ru.md)*
  
@@ -134,8 +134,16 @@ change rather than a redeployment.
 ### Channel 2 — Browser (ChatGPT / Claude / Gemini)
 
 The extension intercepts a message **before** the site sends it, has the
-gateway mask it, sends only the anonymized text, and substitutes real values
-back into the assistant's reply on your screen. The web LLM never sees them.
+gateway mask it and sends only the anonymized text. The reply on the site
+keeps its placeholders; the extension's own panel lists what each placeholder
+stands for (`[PERSON_1]` — the real name) and copies the reply with real
+values. The web LLM never sees them.
+
+> **Since 0.3.2 the extension never writes real values into the site's page.**
+> Earlier versions replaced placeholders in the reply's DOM. ChatGPT keeps the
+> conversation in the browser and syncs it, and its editable reply blocks treat
+> a DOM change as a user edit — the restored values were saved to OpenAI after
+> the fact. The panel lives in a closed shadow root outside `<body>`.
 
 **Install (2 minutes):**
 
@@ -150,15 +158,20 @@ back into the assistant's reply on your screen. The web LLM never sees them.
 3. Click the extension icon → **Check connection**. The badge shows `ON` when
    the gateway answers and `!` when it does not.
 
-**Verify it actually works** — the reply you see is restored locally, so it
-does not prove anything by itself:
+**Verify it actually works** — check what the vendor stores, not what your
+browser shows:
 
 1. Send `Customer Yerzhan Nursultanuly, IIN 900715300005, disputes a charge of
    150000 tenge. Draft a short reply that mentions his name and IIN.`
-   A green notice lists what was masked; the reply shows the real values.
-2. Turn the extension **off** and reload the page. The conversation now shows
-   `[PERSON_1]`, `[IIN_1]`, `[AMOUNT_1]` — exactly what the LLM vendor stores.
-3. Stop the gateway and try to send again: the message is **not** sent
+   A green notice lists what was masked; the reply on the page keeps
+   `[PERSON_1]`, the AI-Gate panel shows the real name.
+2. Open the same conversation **on another device** (phone app, or a browser
+   profile without the extension). It must show `[PERSON_1]`, `[IIN_1]`,
+   `[AMOUNT_1]` — exactly what the LLM vendor stores. Reloading the page in the
+   same browser is not proof: ChatGPT may show its local copy.
+3. DevTools → Network → the `conversation` request → Payload: the `parts`
+   field holds placeholders only.
+4. Stop the gateway and try to send again: the message is **not** sent
    (fail-closed), a red notice explains why.
 
 **How it behaves:**
@@ -167,8 +180,9 @@ does not prove anything by itself:
   placeholder across messages and the model never confuses two people.
 - Fail-closed: if the gateway is down or returns `block`, nothing is sent.
 - Secrets (API keys, tokens) are blocked, not masked.
-- Placeholders are restored even when the site splits them across several
-  DOM nodes; real values are never written back into the message box.
+- Placeholders are found even when the site splits them across several DOM
+  nodes. Real values are never written into the site's page — neither the
+  message box nor the replies.
 - Permissions are narrow: `localhost` only by default; a remote gateway's
   address is requested at runtime when you set it.
 - Diagnostics: DevTools → Console, filter `AI-Gate` (no personal data is logged).
@@ -202,10 +216,57 @@ curl -s localhost:8080/v1/check -H 'Content-Type: application/json' \
   -d '{"text":"Check ID 900715300005"}'
 ```
 
+### Streaming
+
+`/v1/chat/completions` accepts `"stream": true` and answers with OpenAI-format
+`chat.completion.chunk` events. Values are restored on the fly; a placeholder
+split across chunks (`[PERS` + `ON_1]`) is held back until it is complete, so
+the user never sees a broken token. Works with OpenAI-compatible and
+Anthropic providers.
+
+### Files
+
+```bash
+curl -s localhost:8080/v1/file -H 'Content-Type: application/json' \
+  -d '{"filename":"contract.docx","content_base64":"'$(base64 -w0 contract.docx)'"}'
+```
+
+DOCX and XLSX come back as a masked copy in the same format (a name split
+across Word runs is caught; an IIN in a numeric Excel cell becomes a
+placeholder string). PDF (text layer) and text files come back as masked
+text. The tokens live in the caller's session, so an AI answer about the file
+is restored with `/v1/restore`.
+
+### Office AI chat
+
+`http://localhost:8080/chat` — a chat for employees over the egress channel:
+streaming answers, model choice (`GET /v1/models`, local models marked), and
+under each message a fold showing exactly what the AI received. History lives
+only in the browser tab. `AIGATE_DAILY_REQUEST_LIMIT` caps requests per
+employee per day.
+
+### Monthly report for the owner
+
+Requests, employees, values hidden by type, blocked requests, who pastes the
+most client data, and audit-chain integrity for a calendar month — counters
+only, no values. Printable page in the console (save as PDF), JSON at
+`/admin/api/report/monthly`, and a Telegram message on
+`AIGATE_REPORT_DAY` when `AIGATE_TELEGRAM_BOT_TOKEN` and
+`AIGATE_TELEGRAM_CHAT_ID` are set.
+
+### Cloud mode
+
+`AIGATE_MULTI_TENANT=1` serves several companies from one gateway: each has
+its own policy, audit log, detector rules and in-memory Mapping Store; only
+the operator's provider keys are shared. The tenant is resolved from its key;
+keys are stored as hashes only. Seats limit distinct employees per month.
+Operator API and deployment: [docs/CLOUD.md](docs/CLOUD.md).
+
 ### "Check your text" page
 
 `http://localhost:8080/try` — paste a letter or a form and see, side by side,
-what stays with you and what an AI service would receive. Used for demos and
+what stays with you and what an AI service would receive, or mask a whole
+file and download the copy. Used for demos and
 for letting a prospective customer test their own documents. The preview
 endpoint (`POST /try/api/preview`) stores nothing — no Mapping Store entry, no
 audit record — and forwards nothing. Turn it off with `AIGATE_TRY_PAGE=0`.
@@ -267,7 +328,7 @@ Semantic detection: `AIGATE_SEMANTIC_GUARD=flag|block` plus
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -t .   # 172 tests, no external dependencies
+python -m unittest discover -s tests -t .   # 214 tests, no external dependencies
 python -I tools/eval_detection.py            # detection quality report
 ```
 
@@ -294,12 +355,16 @@ gateway/
     forwarder.py          # OpenAI-compatible provider
     audit.py              # append-only log with hash chain + compliance report
     crypto.py             # Mapping Store encryption (stdlib, PRF-CTR + HMAC)
+    files.py              # DOCX/XLSX masked copies, PDF text layer
+    owner_report.py       # monthly report: page, Telegram, schedule
+    tenants.py            # cloud mode: tenants, keys, seats, isolation
   static/index.html       # admin console
-  static/try.html         # "check your text" page
+  static/try.html         # "check your text" page and file masking
+  static/chat.html        # office AI chat
 extension/                # browser extension (Manifest V3, Chrome/Edge/Firefox)
 agent/                    # endpoint agent: clipboard + local apps
 integrations/             # Claude Code IDE hook, git pre-commit, 1C, MCP server
-tests/                    # unittest, 172 tests; synthetic quality corpus
+tests/                    # unittest, 214 tests; synthetic quality corpus
 tools/                    # quality report, extension icons and store packaging
 docs/                     # specification, channel guides, QUALITY.md, extension/ (privacy, store listing)
 ```
@@ -318,8 +383,6 @@ any regime where prompts must not carry personal data to a foreign vendor.
 Stated plainly, because a security tool that oversells itself earns the
 criticism it gets:
 
-- **Streaming responses through the egress proxy are not supported** —
-  detokenization needs the complete response. An incremental detokenizer is planned.
 - **Name detection is rule- and lexicon-based, not ML.** It misses an unknown
   first name next to a surname without a typical ending ("Emil Seitkali"),
   names written in lower case, and deliberately leaves a lone first name
@@ -327,9 +390,17 @@ criticism it gets:
   [docs/QUALITY.md](docs/QUALITY.md) come from a synthetic corpus and are
   optimistic; real numbers are measured on a customer's own documents during a
   pilot. An optional NER model is the next step.
-- **The browser channel does not inspect uploaded files**, only typed text;
-  the extension warns when a file is attached. Web LLM sites change their
-  markup often, so interception may need updating after a site redesign.
+- **The browser extension does not inspect uploaded files**, only typed
+  text; it warns when a file is attached. Files are masked through
+  `/v1/file` or the "Mask a file" button on `/try`, then uploaded as a copy.
+  Web LLM sites change their markup often, so interception may need updating
+  after a site redesign.
+- **PDF: text layer only.** Scans and fonts without a Unicode map are
+  refused (fail-closed), not passed; a masked PDF comes back as text.
+- **Cloud mode keeps counters in process memory.** Daily limits and seat
+  counts restart with the process (seats are rebuilt from the audit log on
+  first use), and one gateway process serves all tenants — run it behind a
+  TLS reverse proxy in a Kazakhstan data centre, see [docs/CLOUD.md](docs/CLOUD.md).
 - **This reduces leakage risk; it does not by itself create legal compliance.**
   What it provides is the technical control and the evidence trail a compliance
   program needs underneath it. Enforcement practice around LLM cross-border
