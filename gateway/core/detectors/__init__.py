@@ -3,7 +3,8 @@
 Каждый детектор возвращает список Detection. Реестр detect_all()
 прогоняет все детекторы (плюс переданные дополнительные — например,
 настраиваемые правила организации) и разрешает пересечения по
-приоритету типа: SECRET/CONFIDENTIAL > IIN/BIN > IBAN/CARD > PERSON > AMOUNT.
+приоритету типа: SECRET/CONFIDENTIAL > IIN/BIN > IBAN/CARD/документы/контакты >
+PERSON/адрес/госномер/дата рождения > AMOUNT.
 """
 
 from __future__ import annotations
@@ -12,7 +13,10 @@ from typing import Callable
 
 from gateway.models import Detection
 
+from .address import detect_address, detect_plate
 from .amounts import detect_amounts
+from .contacts import detect_email, detect_phone
+from .documents import detect_birthdate, detect_id_documents
 from .financial import detect_card, detect_iban
 from .iin_bin import detect_iin_bin
 from .names import detect_person
@@ -25,7 +29,13 @@ _PRIORITY = {
     "BIN": 1,
     "IBAN": 2,
     "CARD": 2,
+    "ID_DOC": 2,
+    "EMAIL": 2,
+    "PHONE": 2,
     "PERSON": 3,
+    "ADDRESS": 3,
+    "PLATE": 3,
+    "BIRTHDATE": 3,
     "AMOUNT": 4,
 }
 
@@ -36,7 +46,13 @@ _BUILTIN: list[Detector] = [
     detect_iin_bin,
     detect_iban,
     detect_card,
+    detect_id_documents,
+    detect_email,
+    detect_phone,
     detect_person,
+    detect_address,
+    detect_plate,
+    detect_birthdate,
     detect_amounts,
 ]
 

@@ -10,6 +10,10 @@ Control Plane (F8):
   GET  /admin/api/audit, /admin/api/audit/verify, /admin/api/report, /admin/api/config
   GET  /admin — консоль (статический UI)
 
+Страница «Проверь свой текст» (выключается AIGATE_TRY_PAGE=0):
+  GET  /try                 — страница
+  POST /try/api/preview     — что ушло бы провайдеру; ничего не хранит и не отправляет
+
 Безопасность (раздел 8 ТЗ): ключи каналов (X-AIGate-Key / Bearer),
 админ-токен (без него Control Plane доступен только с localhost),
 сравнение ключей — constant-time (hmac.compare_digest).
@@ -36,6 +40,7 @@ logger = logging.getLogger("aigate.server")
 
 _STATIC_DIR = Path(__file__).parent / "static"
 _MAX_BODY = 10 * 1024 * 1024  # 10 МБ
+_MAX_PREVIEW_CHARS = 20_000  # страница проверки — для фрагментов, не для документов
 
 
 class ApiError(Exception):
@@ -217,6 +222,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 )
             elif route in ("/admin", "/admin/ui", "/admin/ui/index.html"):
                 self._send_static("index.html")
+            elif route == "/try" and self.settings.try_page:
+                self._send_static("try.html")
             else:
                 self._send_json(404, {"detail": "Не найдено"})
         except ApiError as e:
@@ -246,6 +253,15 @@ class GatewayHandler(BaseHTTPRequestHandler):
             elif route == "/v1/chat/completions":
                 self._require_channel_auth()
                 self._chat_completions()
+            elif route == "/try/api/preview" and self.settings.try_page:
+                text = self._read_json().get("text")
+                if not isinstance(text, str) or not text.strip():
+                    raise ApiError(400, "Вставьте текст для проверки")
+                if len(text) > _MAX_PREVIEW_CHARS:
+                    raise ApiError(
+                        413, f"Текст длиннее {_MAX_PREVIEW_CHARS} символов — проверьте его частями"
+                    )
+                self._send_json(200, self.pipeline.preview(text))
             else:
                 self._send_json(404, {"detail": "Не найдено"})
         except ApiError as e:

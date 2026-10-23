@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import re
 
-from gateway.models import Detection
+from gateway.models import Detection, EntityType
 
 from .mapping_store import MappingStore
 
-_TOKEN_RE = re.compile(r"\[(?:IIN|BIN|PERSON|IBAN|CARD|SECRET|AMOUNT)_\d+\]")
+# Строится из EntityType, чтобы новый тип сущности не забыть добавить сюда:
+# незнакомый токен остался бы в ответе пользователю как есть.
+_TOKEN_RE = re.compile(
+    r"\[(?:" + "|".join(sorted((t.value for t in EntityType), key=len, reverse=True)) + r")_\d+\]"
+)
 
 
 def tokenize(

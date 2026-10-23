@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Проверь свой текст — AI-Gate</title>
+<meta name="description" content="Покажет, какие персональные данные шлюз скроет перед отправкой текста в ChatGPT, Claude или Gemini.">
+<style>
+  /* Тема — трансграничная передача: слева то, что остаётся в РК, справа то,
+     что пересекает границу. Между ними — перфорация отрывного корешка.
+     Акцент один: оттиск штемпеля фиолетовой канцелярской краской. */
+  :root {
+    --paper: #eef1f4;
+    --sheet: #fbfcfd;
+    --graphite: #1c2733;
+    --muted: #5b6876;
+    --rule: #cfd6de;
+    --ink: #4b3f9e;          /* штемпельная краска */
+    --ink-soft: #e6e3f6;
+    --marker: #f2c14e;       /* маркер по найденному */
+    --marker-soft: rgba(242, 193, 78, .45);
+    --alarm: #b3261e;
+    --focus: #4b3f9e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #151b22;
+      --sheet: #1d252e;
+      --graphite: #e4e9ee;
+      --muted: #9aa6b2;
+      --rule: #34404c;
+      --ink: #a79cf0;
+      --ink-soft: #2c2850;
+      --marker-soft: rgba(242, 193, 78, .32);
+      --alarm: #ef8a83;
+      --focus: #a79cf0;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--graphite);
+    font: 16px/1.55 "Segoe UI", "PT Sans", "Noto Sans", system-ui, sans-serif;
+  }
+  .page { max-width: 1120px; margin: 0 auto; padding: 40px 16px 64px; }
+
+  header { max-width: 720px; margin-bottom: 28px; }
+  h1 {
+    font-size: clamp(1.75rem, 1.2rem + 2.2vw, 2.6rem);
+    line-height: 1.12;
+    letter-spacing: -.015em;
+    font-weight: 700;
+    margin: 0 0 12px;
+  }
+  .lede { margin: 0; color: var(--muted); max-width: 62ch; }
+
+  .examples { display: flex; flex-wrap: wrap; gap: 8px; margin: 22px 0 18px; align-items: center; }
+  .examples span { color: var(--muted); margin-right: 4px; }
+  .chip {
+    font: inherit; font-size: .9rem;
+    background: transparent; color: var(--graphite);
+    border: 1px solid var(--rule); border-radius: 6px;
+    padding: 4px 10px; cursor: pointer;
+  }
+  .chip:hover { border-color: var(--ink); color: var(--ink); }
+
+  /* Корешок: два листа и перфорация между ними */
+  .ticket {
+    display: grid;
+    grid-template-columns: 1fr 28px 1fr;
+    background: var(--sheet);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    min-height: 420px;
+  }
+  .half { padding: 18px 20px 20px; display: flex; flex-direction: column; min-width: 0; position: relative; }
+  .half h2 { font-size: 1rem; font-weight: 600; margin: 0 0 2px; }
+  .half .hint { font-size: .85rem; color: var(--muted); margin: 0 0 12px; }
+
+  .perforation {
+    position: relative;
+    background-image: radial-gradient(circle, var(--rule) 2.2px, transparent 2.6px);
+    background-size: 28px 14px;
+    background-repeat: repeat-y;
+    background-position: center;
+  }
+  .perforation::before, .perforation::after {
+    content: ""; position: absolute; left: 50%; width: 22px; height: 22px;
+    background: var(--paper); border: 1px solid var(--rule); border-radius: 50%;
+    transform: translateX(-50%);
+  }
+  .perforation::before { top: -12px; clip-path: inset(50% 0 0 0); }
+  .perforation::after { bottom: -12px; clip-path: inset(0 0 50% 0); }
+
+  textarea, .rendered {
+    flex: 1;
+    width: 100%;
+    min-height: 300px;
+    font: inherit;
+    color: inherit;
+    background: transparent;
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 12px 14px;
+    resize: vertical;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .rendered { overflow: auto; }
+  textarea:focus-visible, button:focus-visible, .rendered:focus-visible {
+    outline: 2px solid var(--focus); outline-offset: 2px;
+  }
+  mark {
+    background: var(--marker-soft);
+    color: inherit;
+    border-bottom: 2px solid var(--marker);
+    padding: 0 1px;
+  }
+  mark.allow { background: none; border-bottom: 2px dashed var(--muted); }
+
+  .outgoing {
+    flex: 1;
+    min-height: 300px;
+    font: 14.5px/1.6 ui-monospace, "Cascadia Mono", Consolas, monospace;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    padding: 12px 14px;
+    border: 1px dashed var(--rule);
+    border-radius: 6px;
+    overflow: auto;
+  }
+  .outgoing .empty { color: var(--muted); font-family: "Segoe UI", system-ui, sans-serif; }
+  .token {
+    color: var(--ink);
+    background: var(--ink-soft);
+    border-radius: 3px;
+    padding: 0 3px;
+  }
+  .outgoing.blocked { color: var(--muted); font-family: "Segoe UI", system-ui, sans-serif; }
+
+  .actions { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; align-items: center; }
+  .primary {
+    font: inherit; font-weight: 600;
+    background: var(--ink); color: #fff;
+    border: 0; border-radius: 6px; padding: 9px 18px; cursor: pointer;
+  }
+  .primary:disabled { opacity: .55; cursor: default; }
+  .secondary {
+    font: inherit; background: transparent; color: var(--graphite);
+    border: 1px solid var(--rule); border-radius: 6px; padding: 8px 14px; cursor: pointer;
+  }
+  .status { color: var(--muted); font-size: .9rem; }
+  .status.error { color: var(--alarm); }
+
+  /* Штемпель — единственный акцент страницы */
+  .stamp {
+    position: absolute; right: 26px; bottom: 30px;
+    border: 3px solid currentColor; border-radius: 8px;
+    padding: 6px 14px 7px; text-align: center;
+    color: var(--ink); background: transparent;
+    transform: rotate(-7deg);
+    opacity: .88;
+    pointer-events: none;
+    mix-blend-mode: multiply;
+    font-weight: 800; letter-spacing: .06em; line-height: 1.15;
+  }
+  @media (prefers-color-scheme: dark) { .stamp { mix-blend-mode: normal; } }
+  .stamp small { display: block; font-weight: 600; letter-spacing: .02em; font-size: .78rem; }
+  .stamp.alarm { color: var(--alarm); }
+  .stamp.quiet { color: var(--muted); }
+  .stamp.press { animation: press .38s cubic-bezier(.2, .9, .3, 1.3) both; }
+  @keyframes press {
+    from { transform: rotate(-12deg) scale(1.6); opacity: 0; }
+    to { transform: rotate(-7deg) scale(1); opacity: .88; }
+  }
+  @media (prefers-reduced-motion: reduce) { .stamp.press { animation: none; } }
+
+  .found { margin-top: 20px; max-width: 760px; }
+  .found p { margin: 0 0 6px; }
+  .found ul { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 6px 14px; }
+  .found li { color: var(--muted); }
+  .found li b { color: var(--graphite); font-weight: 600; }
+
+  footer { margin-top: 36px; color: var(--muted); font-size: .88rem; max-width: 70ch; }
+
+  @media (max-width: 760px) {
+    .page { padding-top: 28px; }
+    .ticket { grid-template-columns: 1fr; grid-template-rows: auto 28px auto; }
+    .perforation { background-size: 14px 28px; background-repeat: repeat-x; }
+    .perforation::before, .perforation::after { top: 50%; bottom: auto; left: auto; transform: translateY(-50%); }
+    .perforation::before { left: -12px; clip-path: inset(0 0 0 50%); }
+    .perforation::after { right: -12px; clip-path: inset(0 50% 0 0); }
+    textarea, .rendered, .outgoing { min-height: 200px; }
+    /* на узком экране штамп не перекрывает текст, а стоит под ним */
+    .stamp { position: static; align-self: flex-end; margin-top: 14px; font-size: .9rem; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+  <header>
+    <h1>Что увидит ChatGPT из вашего текста</h1>
+    <p class="lede">Вставьте письмо, договор или анкету. Страница покажет, какие данные шлюз скроет перед отправкой в ChatGPT, Claude или Gemini. Текст проверяется на этом шлюзе, никуда не отправляется и не сохраняется.</p>
+  </header>
+
+  <div class="examples" role="group" aria-label="Примеры текста">
+    <span>Попробовать на примере:</span>
+    <button class="chip" type="button" data-example="letter">Письмо по жалобе</button>
+    <button class="chip" type="button" data-example="form">Анкета сотрудника</button>
+    <button class="chip" type="button" data-example="code">Фрагмент с ключом API</button>
+  </div>
+
+  <section class="ticket">
+    <div class="half">
+      <h2 id="mine-title">Остаётся у вас</h2>
+      <p class="hint">Жёлтым отмечено то, что не уйдёт наружу</p>
+      <textarea id="input" aria-labelledby="mine-title" spellcheck="false"
+        placeholder="Например: Клиент Айгуль Ахметова, ИИН 900715300005, просит вернуть 150 000 тенге на карту…"></textarea>
+      <div id="rendered" class="rendered" tabindex="0" hidden aria-labelledby="mine-title"></div>
+      <div class="actions">
+        <button id="check" class="primary" type="button">Проверить текст</button>
+        <button id="edit" class="secondary" type="button" hidden>Изменить текст</button>
+        <span id="status" class="status" role="status"></span>
+      </div>
+    </div>
+
+    <div class="perforation" aria-hidden="true"></div>
+
+    <div class="half">
+      <h2>Уходит в ChatGPT</h2>
+      <p class="hint">Так текст увидит сервис ИИ за рубежом</p>
+      <div id="outgoing" class="outgoing" aria-live="polite"><span class="empty">Здесь появится текст, который получит сервис ИИ.</span></div>
+      <div id="stamp" class="stamp" hidden></div>
+    </div>
+  </section>
+
+  <section id="found" class="found" hidden aria-live="polite"></section>
+
+  <footer>
+    Ответ ИИ возвращается с настоящими значениями: шлюз подставляет их обратно у вас на компьютере. Сервис ИИ видит только метки вроде [PERSON_1].
+  </footer>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  const LABELS = {
+    IIN: "ИИН", BIN: "БИН", PERSON: "ФИО", IBAN: "Счёт", CARD: "Карта",
+    SECRET: "Ключ доступа", AMOUNT: "Сумма", CONFIDENTIAL: "Гриф",
+    PHONE: "Телефон", EMAIL: "Почта", ID_DOC: "Документ",
+    BIRTHDATE: "Дата рождения", ADDRESS: "Адрес", PLATE: "Госномер"
+  };
+
+  const EXAMPLES = {
+    letter:
+      "Добрый день!\n\nКлиент Айгуль Ахметова (ИИН 900715300005) жалуется, что с карты 4111 1111 1111 1111 " +
+      "дважды списали 150 000 тенге. Телефон для связи +7 701 123 45 67, почта a.ahmetova@mail.kz.\n\n" +
+      "Подготовь, пожалуйста, вежливый ответ: извинись, пообещай вернуть деньги на счёт KZ86125KZT5004100100 в течение 5 дней.",
+    form:
+      "Анкета сотрудника\nФИО: Тулегенов Ербулат Нурланулы\nДата рождения: 12.03.1985\n" +
+      "Удостоверение личности № 041234567\nАдрес: г. Алматы, ул. Абая, д. 10, кв. 5\n" +
+      "Служебный автомобиль 123 ABC 02\n\nСоставь приказ о приёме на должность менеджера.",
+    code:
+      "Почему не работает запрос?\n\nimport openai\nclient = openai.OpenAI(api_key=\"sk-proj-Ab12Cd34Ef56Gh78Ij90KlMnOpQrStUv\")\n" +
+      "resp = client.chat.completions.create(model=\"gpt-4o-mini\", messages=[...])"
+  };
+
+  const $ = (id) => document.getElementById(id);
+  const input = $("input"), rendered = $("rendered"), outgoing = $("outgoing");
+  const stamp = $("stamp"), found = $("found"), status = $("status");
+  const checkBtn = $("check"), editBtn = $("edit");
+
+  function esc(s) {
+    return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  }
+
+  function highlight(text, items) {
+    let out = "", pos = 0;
+    for (const it of [...items].sort((a, b) => a.start - b.start)) {
+      if (it.start < pos) continue;
+      out += esc(text.slice(pos, it.start));
+      const cls = it.action === "allow" ? ' class="allow"' : "";
+      out += `<mark${cls} title="${LABELS[it.type] || it.type}">` + esc(text.slice(it.start, it.end)) + "</mark>";
+      pos = it.end;
+    }
+    return out + esc(text.slice(pos));
+  }
+
+  function showStamp(kind, title, note) {
+    stamp.className = "stamp" + (kind ? " " + kind : "");
+    stamp.innerHTML = esc(title) + (note ? "<small>" + esc(note) + "</small>" : "");
+    stamp.hidden = false;
+    void stamp.offsetWidth;   // перезапуск анимации при повторной проверке
+    stamp.classList.add("press");
+  }
+
+  // «Ключ доступа» -> «ключ доступа» внутри фразы; аббревиатуры (ИИН, ФИО) как есть
+  function inSentence(label) {
+    return label === label.toUpperCase() ? label : label[0].toLowerCase() + label.slice(1);
+  }
+
+  function plural(n, one, few, many) {
+    const m10 = n % 10, m100 = n % 100;
+    if (m10 === 1 && m100 !== 11) return one;
+    if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
+    return many;
+  }
+
+  function render(text, data) {
+    rendered.innerHTML = highlight(text, data.items);
+    input.hidden = true; rendered.hidden = false;
+    checkBtn.hidden = true; editBtn.hidden = false;
+
+    const counts = {};
+    for (const it of data.items) counts[it.type] = (counts[it.type] || 0) + 1;
+    const hidden = data.items.filter((it) => it.action !== "allow").length;
+
+    if (data.verdict === "blocked") {
+      outgoing.className = "outgoing blocked";
+      outgoing.textContent = "Запрос не будет отправлен. В тексте есть данные, которые политика запрещает передавать наружу: " +
+        Object.keys(counts).filter((t) => data.items.some((i) => i.type === t && i.action === "block"))
+          .map((t) => inSentence(LABELS[t] || t)).join(", ") + ". Уберите их и проверьте снова.";
+      showStamp("alarm", "НЕ ОТПРАВЛЯТЬ", "");
+    } else {
+      outgoing.className = "outgoing";
+      outgoing.innerHTML = esc(data.masked_text).replace(/\[[A-Z_]+_\d+\]/g, (t) => `<span class="token">${t}</span>`);
+      if (data.verdict === "clean") showStamp("quiet", "ДАННЫХ НЕ НАЙДЕНО", "уйдёт как есть");
+      else showStamp("", "ОБЕЗЛИЧЕНО", "скрыто " + hidden + " " + plural(hidden, "значение", "значения", "значений"));
+    }
+
+    if (data.items.length) {
+      found.innerHTML = "<p>Найдено в тексте:</p><ul>" +
+        Object.entries(counts).map(([t, n]) => `<li><b>${esc(LABELS[t] || t)}</b> — ${n}</li>`).join("") + "</ul>";
+      found.hidden = false;
+    } else {
+      found.hidden = true;
+    }
+  }
+
+  async function check() {
+    const text = input.value;
+    if (!text.trim()) {
+      status.className = "status error";
+      status.textContent = "Вставьте текст, чтобы проверить его.";
+      input.focus();
+      return;
+    }
+    checkBtn.disabled = true;
+    status.className = "status";
+    status.textContent = "Проверяем…";
+    try {
+      // относительный адрес: страница работает и за обратным прокси с префиксом
+      const url = new URL("api/preview", location.href.replace(/\/?(\?.*)?$/, "/"));
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text })
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail || "Шлюз вернул ошибку " + resp.status);
+      status.textContent = "";
+      render(text, data);
+    } catch (e) {
+      status.className = "status error";
+      status.textContent = e.message === "Failed to fetch"
+        ? "Шлюз не отвечает. Проверьте, что он запущен, и повторите."
+        : e.message;
+    } finally {
+      checkBtn.disabled = false;
+    }
+  }
+
+  function edit() {
+    input.hidden = false; rendered.hidden = true;
+    checkBtn.hidden = false; editBtn.hidden = true;
+    stamp.hidden = true; found.hidden = true;
+    outgoing.className = "outgoing";
+    outgoing.innerHTML = '<span class="empty">Здесь появится текст, который получит сервис ИИ.</span>';
+    input.focus();
+  }
+
+  checkBtn.addEventListener("click", check);
+  editBtn.addEventListener("click", edit);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) check();
+  });
+  document.querySelectorAll("[data-example]").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      if (input.hidden) edit();
+      input.value = EXAMPLES[btn.dataset.example];
+      check();
+    })
+  );
+})();
+</script>
+</body>
+</html>

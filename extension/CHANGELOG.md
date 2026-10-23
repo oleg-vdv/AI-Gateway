@@ -1,5 +1,15 @@
 # AI-Gate DLP browser extension — changelog
 
+## 0.3.0
+- Settings moved from `storage.sync` to `storage.local`: the channel key is no longer
+  synced to the user's Google account. Existing settings are migrated on first use.
+- Administrators can set the gateway address, channel key and user label by browser
+  policy (`storage.managed`, schema in `managed_schema.json`); such fields are read-only
+  in the options page.
+- New placeholder types are restored in replies: PHONE, EMAIL, ID_DOC, BIRTHDATE,
+  ADDRESS, PLATE, CONFIDENTIAL.
+- Icons; store packaging via `tools/pack_extension.py`.
+
 ## 0.2.3
 - Session follows ChatGPT's temporary `/c/WEB:<uuid>` URL to the real conversation id.
 

@@ -31,6 +31,12 @@ def default_policy() -> Policy:
             # Маркеры коммерческой тайны: маскирование бессмысленно
             # (гриф — не значение), документ с грифом не должен уходить.
             PolicyRule(entity_type=EntityType.CONFIDENTIAL, action=Action.BLOCK),
+            PolicyRule(entity_type=EntityType.PHONE, action=Action.MASK),
+            PolicyRule(entity_type=EntityType.EMAIL, action=Action.MASK),
+            PolicyRule(entity_type=EntityType.ID_DOC, action=Action.MASK),
+            PolicyRule(entity_type=EntityType.BIRTHDATE, action=Action.MASK),
+            PolicyRule(entity_type=EntityType.ADDRESS, action=Action.MASK),
+            PolicyRule(entity_type=EntityType.PLATE, action=Action.MASK),
         ],
         fail_closed=True,
     )

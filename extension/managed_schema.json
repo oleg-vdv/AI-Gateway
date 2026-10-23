@@ -1,0 +1,20 @@
+{
+  "type": "object",
+  "properties": {
+    "gatewayUrl": {
+      "title": "Адрес шлюза AI-Gate",
+      "description": "Например https://aigate.company.kz",
+      "type": "string"
+    },
+    "channelKey": {
+      "title": "Ключ канала",
+      "description": "Ключ из AIGATE_CHANNEL_API_KEYS на шлюзе",
+      "type": "string"
+    },
+    "user": {
+      "title": "Имя пользователя для журнала",
+      "description": "Попадает в журнал аудита шлюза; персональные данные сюда не пишите",
+      "type": "string"
+    }
+  }
+}

@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import uuid
 
-from gateway.models import CheckRequest, CheckResponse, Verdict
+from gateway.models import Action, Channel, CheckRequest, CheckResponse, Verdict
 
 from .audit import AuditLog
 from .detectors import detect_all
@@ -213,3 +213,51 @@ class Pipeline:
         if purge:
             self.store.purge_session(session_id)
         return restored
+
+    def preview(self, text: str, group: str = "default") -> dict:
+        """Показать, что ушло бы провайдеру, ничего не сохраняя.
+
+        Для страницы «Проверь свой текст»: значения не попадают ни в
+        Mapping Store, ни в аудит, наружу ничего не отправляется. В ответе
+        только позиции находок в присланном тексте и обезличенная версия.
+        """
+        extra = [self.custom_rules.detect] if self.custom_rules else None
+        detections = detect_all(text, extra=extra)
+        actions, _, blocked, _ = self.policy.evaluate(detections, Channel.API, group)
+        counters: dict[str, int] = {}
+        tokens: list[str] = []
+        seen: dict[str, str] = {}
+        for det in detections:
+            if det.value not in seen:
+                key = det.entity_type.value
+                counters[key] = counters.get(key, 0) + 1
+                seen[det.value] = f"[{key}_{counters[key]}]"
+            tokens.append(seen[det.value])
+
+        masked = text
+        for det, token in sorted(
+            zip(detections, tokens), key=lambda p: p[0].start, reverse=True
+        ):
+            if actions[det.entity_type.value] != Action.ALLOW:
+                masked = masked[: det.start] + token + masked[det.end :]
+
+        if blocked:
+            verdict = Verdict.BLOCKED
+        elif detections:
+            verdict = Verdict.MASKED
+        else:
+            verdict = Verdict.CLEAN
+        return {
+            "verdict": verdict.value,
+            "masked_text": None if blocked else masked,
+            "items": [
+                {
+                    "type": det.entity_type.value,
+                    "start": det.start,
+                    "end": det.end,
+                    "token": token,
+                    "action": actions[det.entity_type.value].value,
+                }
+                for det, token in zip(detections, tokens)
+            ],
+        }

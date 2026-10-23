@@ -5,7 +5,7 @@
 
 ![Python 3.11+](https://img.shields.io/badge/Python-3.11+-3776AB.svg)
 ![Zero dependencies](https://img.shields.io/badge/dependencies-stdlib_only-9ece6a.svg)
-![Tests](https://img.shields.io/badge/tests-137-success.svg)
+![Tests](https://img.shields.io/badge/tests-172-success.svg)
 
 *[Русская версия](docs/README.ru.md)*
  
@@ -61,8 +61,14 @@ Channels                        Core (shared pipeline)               Control Pla
   known formats (OpenAI / Anthropic / AWS / GitHub / Slack / JWT / PEM / .env)
   plus Shannon entropy.
 - **Name detection with regional specifics.** Kazakh patronymic suffixes
-  (`-uly/-ұлы/-kyzy/-қызы/-tegi`), Russian patronymics, initials, and
-  context-driven two-word names ("client: Aidos Smagulov").
+  (`-uly/-ұлы/-kyzy/-қызы/-tegi`), Russian patronymics, initials,
+  context-driven names ("client: Aidos Smagulov"), and names *without* a
+  patronymic in either order ("Aigul Akhmetova", "Akhmetova Aigul") via a
+  Kazakh/Russian first-name lexicon (Cyrillic, Latin, case forms) plus
+  surname endings. Measured on a synthetic corpus: [docs/QUALITY.md](docs/QUALITY.md).
+- **Office personal data.** Phone numbers (+7/8 and Central Asian codes),
+  email, ID card and passport numbers, birth dates (by context), postal
+  addresses (Russian and Kazakh word order) and Kazakhstan licence plates.
 - **Amounts and trade secrets.** Currency amounts (KZT/₸/RUB/USD/EUR) and
   values following context words ("balance:", "amount —"); organization-specific
   rules (confidentiality markers, custom regexes) managed through the admin API
@@ -196,6 +202,14 @@ curl -s localhost:8080/v1/check -H 'Content-Type: application/json' \
   -d '{"text":"Check ID 900715300005"}'
 ```
 
+### "Check your text" page
+
+`http://localhost:8080/try` — paste a letter or a form and see, side by side,
+what stays with you and what an AI service would receive. Used for demos and
+for letting a prospective customer test their own documents. The preview
+endpoint (`POST /try/api/preview`) stores nothing — no Mapping Store entry, no
+audit record — and forwards nothing. Turn it off with `AIGATE_TRY_PAGE=0`.
+
 ## Policies
 
 Per entity type: `mask` (reversible tokenization), `block` (the request never
@@ -253,13 +267,15 @@ Semantic detection: `AIGATE_SEMANTIC_GUARD=flag|block` plus
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -t .   # 137 tests, no external dependencies
+python -m unittest discover -s tests -t .   # 172 tests, no external dependencies
+python -I tools/eval_detection.py            # detection quality report
 ```
 
 The suite covers the acceptance criteria: no sensitive value ever reaches the
 provider (verified by inspecting "outbound traffic" through a stub provider),
 response restoration, ID checksums, fail-closed behavior, audit-chain integrity,
-and the egress channel end to end.
+and the egress channel end to end. `tests/test_quality.py` fails the build if
+detection recall on the synthetic corpus drops below the published thresholds.
 
 ## Repository layout
 
@@ -271,7 +287,7 @@ gateway/
   models.py               # data model
   core/
     pipeline.py           # Ingress→Detector→Tokenizer→Policy→Forwarder→Detokenizer→Audit
-    detectors/            # national IDs (checksum), names, IBAN/PAN, secrets
+    detectors/            # national IDs (checksum), names, contacts, documents, addresses, IBAN/PAN, secrets
     tokenizer.py          # reversible tokenization / detokenization
     mapping_store.py      # ephemeral encrypted token↔value store (TTL, purge)
     policy.py             # policy engine (mask/block/allow, fail-closed)
@@ -279,11 +295,13 @@ gateway/
     audit.py              # append-only log with hash chain + compliance report
     crypto.py             # Mapping Store encryption (stdlib, PRF-CTR + HMAC)
   static/index.html       # admin console
+  static/try.html         # "check your text" page
 extension/                # browser extension (Manifest V3, Chrome/Edge/Firefox)
 agent/                    # endpoint agent: clipboard + local apps
 integrations/             # Claude Code IDE hook, git pre-commit, 1C, MCP server
-tests/                    # unittest, 137 tests
-docs/                     # specification, channel guides
+tests/                    # unittest, 172 tests; synthetic quality corpus
+tools/                    # quality report, extension icons and store packaging
+docs/                     # specification, channel guides, QUALITY.md, extension/ (privacy, store listing)
 ```
 
 ## Regional compliance
@@ -302,11 +320,13 @@ criticism it gets:
 
 - **Streaming responses through the egress proxy are not supported** —
   detokenization needs the complete response. An incremental detokenizer is planned.
-- **Name detection is pattern-based and has known gaps.** Names with a
-  patronymic ("Yerzhan Nursultanuly", "Sergey Petrovich") are caught; a name
-  without a patronymic ("Aigul Akhmetova") is not, and a surname *after* the
-  patronymic ("Sergey Petrovich Ivanov") currently leaks. Fixing this —
-  context rules first, then an optional NER model — is the top priority.
+- **Name detection is rule- and lexicon-based, not ML.** It misses an unknown
+  first name next to a surname without a typical ending ("Emil Seitkali"),
+  names written in lower case, and deliberately leaves a lone first name
+  ("Hello, Aigul!") unmasked. The quality figures in
+  [docs/QUALITY.md](docs/QUALITY.md) come from a synthetic corpus and are
+  optimistic; real numbers are measured on a customer's own documents during a
+  pilot. An optional NER model is the next step.
 - **The browser channel does not inspect uploaded files**, only typed text;
   the extension warns when a file is attached. Web LLM sites change their
   markup often, so interception may need updating after a site redesign.
