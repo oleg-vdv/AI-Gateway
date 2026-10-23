@@ -15,6 +15,7 @@ import uuid
 
 from gateway.models import Action, Channel, CheckRequest, CheckResponse, Verdict
 
+from . import files
 from .audit import AuditLog
 from .detectors import detect_all
 from .detectors.custom import CustomRuleRegistry
@@ -213,6 +214,99 @@ class Pipeline:
         if purge:
             self.store.purge_session(session_id)
         return restored
+
+    def sanitize_file(
+        self,
+        filename: str,
+        data: bytes,
+        user: str = "anonymous",
+        group: str = "default",
+        channel: Channel = Channel.API,
+        session_id: str | None = None,
+    ) -> dict:
+        """Обезличить файл (этап 1): DOCX/XLSX — копия в том же формате,
+        PDF и текст — обезличенный текст. Те же детекторы, политика и аудит,
+        что у текстовых каналов; токены живут в той же сессии, поэтому ответ
+        ИИ по файлу восстанавливается обычным /v1/restore.
+
+        Неподдерживаемый формат — ошибка UnsupportedFile (вызывающий отдаёт
+        415); нечитаемый файл и любая внутренняя ошибка — fail-closed.
+        """
+        request_id = uuid.uuid4().hex
+        session_id = session_id or request_id
+        try:
+            doc = files.open_document(filename, data)
+            extra = [self.custom_rules.detect] if self.custom_rules else None
+            per_segment = [detect_all(seg, extra=extra) for seg in doc.segments]
+            all_dets = [d for dets in per_segment for d in dets]
+            entity_counts: dict[str, int] = {}
+            for det in all_dets:
+                entity_counts[det.entity_type.value] = entity_counts.get(det.entity_type.value, 0) + 1
+            actions, _, blocked, allow_basis = self.policy.evaluate(all_dets, channel, group)
+            actions_str = {k: v.value for k, v in actions.items()}
+
+            if blocked:
+                verdict = Verdict.BLOCKED
+                output = None
+            else:
+                masked_segments = []
+                for seg, dets in zip(doc.segments, per_segment):
+                    to_mask = [d for d in dets if actions[d.entity_type.value] == Action.MASK]
+                    masked_segments.append(tokenize(seg, to_mask, self.store, session_id))
+                output = doc.rebuild(masked_segments)
+                verdict = Verdict.MASKED if all_dets else Verdict.CLEAN
+
+            self.audit.append(
+                user=user,
+                channel=channel,
+                provider=self.forwarder.provider_name,
+                verdict=verdict,
+                entity_counts=entity_counts,
+                policy_actions=actions_str,
+                cross_border_basis=allow_basis,
+                request_id=request_id,
+            )
+            return {
+                "verdict": verdict.value,
+                "kind": doc.kind,
+                "session_id": session_id,
+                "entity_counts": entity_counts,
+                "out_suffix": doc.out_suffix,
+                "data": output,
+                "message": None
+                if not blocked
+                else "Файл не обезличен: в нём есть данные, запрещённые к отправке ("
+                + ", ".join(t for t, a in actions_str.items() if a == "block")
+                + ").",
+            }
+        except files.UnsupportedFile:
+            raise
+        except Exception as e:
+            unreadable = isinstance(e, files.UnreadableFile)
+            if not unreadable:
+                logger.exception("Ошибка обработки файла (request_id=%s)", request_id)
+            self.store.purge_session(session_id)
+            try:
+                self.audit.append(
+                    user=user,
+                    channel=channel,
+                    provider=self.forwarder.provider_name,
+                    verdict=Verdict.FAIL_CLOSED,
+                    entity_counts={},
+                    policy_actions={},
+                    request_id=request_id,
+                )
+            except Exception:
+                logger.exception("Не удалось записать аудит fail-closed")
+            return {
+                "verdict": Verdict.FAIL_CLOSED.value,
+                "kind": None,
+                "session_id": session_id,
+                "entity_counts": {},
+                "out_suffix": None,
+                "data": None,
+                "message": str(e) if unreadable else "Fail-closed: файл не удалось проверить.",
+            }
 
     def preview(self, text: str, group: str = "default") -> dict:
         """Показать, что ушло бы провайдеру, ничего не сохраняя.

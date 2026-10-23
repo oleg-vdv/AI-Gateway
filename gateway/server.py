@@ -3,7 +3,8 @@
 Каналы (F1):
   POST /v1/check            — канал «Браузер»/API: проверка/маскирование текста
   POST /v1/restore          — обратная подстановка для dry_run-каналов
-  POST /v1/chat/completions — канал «Egress»: OpenAI-совместимый reverse-proxy
+  POST /v1/chat/completions — канал «Egress»: OpenAI-совместимый reverse-proxy (stream=true — SSE)
+  POST /v1/file             — обезличить файл (DOCX/XLSX — копия, PDF/текст — текст)
 
 Control Plane (F8):
   GET  /admin/api/policy, PUT /admin/api/policy
@@ -13,6 +14,7 @@ Control Plane (F8):
 Страница «Проверь свой текст» (выключается AIGATE_TRY_PAGE=0):
   GET  /try                 — страница
   POST /try/api/preview     — что ушло бы провайдеру; ничего не хранит и не отправляет
+  POST /try/api/file        — обезличенная копия файла для скачивания
 
 Безопасность (раздел 8 ТЗ): ключи каналов (X-AIGate-Key / Bearer),
 админ-токен (без него Control Plane доступен только с localhost),
@@ -21,6 +23,8 @@ Control Plane (F8):
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hmac
 import itertools
 import json
@@ -33,6 +37,7 @@ from pathlib import Path
 
 from gateway import __version__
 from gateway.config import Settings
+from gateway.core import files
 from gateway.core.pipeline import Pipeline
 from gateway.core.tokenizer import StreamDetokenizer
 from gateway.core.providers import ProviderConfig
@@ -264,6 +269,13 @@ class GatewayHandler(BaseHTTPRequestHandler):
                         413, f"Текст длиннее {_MAX_PREVIEW_CHARS} символов — проверьте его частями"
                     )
                 self._send_json(200, self.pipeline.preview(text))
+            elif route == "/v1/file":
+                self._require_channel_auth()
+                self._file(keep_session=True)
+            elif route == "/try/api/file" and self.settings.try_page:
+                # страница проверки: обезличенная копия для скачивания,
+                # восстанавливать по ней нечего — сессия сразу удаляется
+                self._file(keep_session=False)
             else:
                 self._send_json(404, {"detail": "Не найдено"})
         except ApiError as e:
@@ -333,6 +345,38 @@ class GatewayHandler(BaseHTTPRequestHandler):
             return CheckRequest.from_dict(body)
         except ValueError as e:
             raise ApiError(400, str(e))
+
+    def _file(self, keep_session: bool) -> None:
+        """Обезличить файл: {filename, content_base64[, user, group, session_id]}."""
+        body = self._read_json()
+        filename = body.get("filename")
+        content = body.get("content_base64")
+        if not isinstance(filename, str) or not isinstance(content, str):
+            raise ApiError(400, "Требуются поля filename и content_base64")
+        try:
+            data = base64.b64decode(content, validate=True)
+        except (binascii.Error, ValueError):
+            raise ApiError(400, "content_base64: некорректный base64")
+        try:
+            result = self.pipeline.sanitize_file(
+                filename,
+                data,
+                user=str(body.get("user") or "file-user"),
+                group=str(body.get("group") or "default"),
+                session_id=body.get("session_id") if keep_session else None,
+            )
+        except files.UnsupportedFile as e:
+            raise ApiError(415, str(e))
+        if not keep_session:
+            self.pipeline.store.purge_session(result["session_id"])
+        stem = re.sub(r"[^\w\-. ]+", "_", Path(filename).stem)[:80] or "file"
+        output = result.pop("data")
+        suffix = result.pop("out_suffix")
+        result["filename"] = f"{stem}-обезличен{suffix}" if output is not None else None
+        result["content_base64"] = base64.b64encode(output).decode() if output is not None else None
+        if not keep_session:
+            result.pop("session_id")
+        self._send_json(200, result)
 
     def _sanitize_messages(
         self, messages: list, user: str, session_id: str, channel: Channel
