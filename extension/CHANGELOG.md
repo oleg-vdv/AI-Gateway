@@ -1,5 +1,11 @@
 # AI-Gate DLP browser extension — changelog
 
+## 0.3.3
+- "Copy the last reply with real values" finds ChatGPT's "Текст" card, which
+  has no data-message-author-role: falls back to the last conversation turn
+  without a user message, then to the last block with a placeholder. Only the
+  reply text is copied, without the card's header.
+
 ## 0.3.2 — security fix
 - **Real values are no longer written into the site's page.** Restoring
   placeholders in the reply's DOM leaked them: ChatGPT keeps the conversation

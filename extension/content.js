@@ -307,12 +307,38 @@
     return full;
   }
 
+  // Последний ответ ассистента. Разметка у сайтов разная и меняется: обычное
+  // сообщение ChatGPT помечено data-message-author-role, а карточка «Текст»
+  // (документ в ответе) — нет. Поэтому три попытки по убыванию точности.
   function lastAssistantText() {
     for (const sel of MESSAGE_SELECTORS) {
-      const all = document.querySelectorAll(sel);
-      if (all.length) return all[all.length - 1].innerText || "";
+      const all = [...document.querySelectorAll(sel)].filter((el) => el.innerText.trim());
+      if (all.length) return all[all.length - 1].innerText;
     }
-    return "";
+    // ход диалога ChatGPT — <article>; ответ — последний ход без сообщения пользователя
+    const turns = [...document.querySelectorAll("main article")].filter(
+      (a) => !a.querySelector('[data-message-author-role="user"]') && a.innerText.trim()
+    );
+    if (turns.length) {
+      // внутри хода — сам текст ответа, без заголовков и подписей кнопок
+      const turn = turns[turns.length - 1];
+      const body = [...turn.querySelectorAll('.markdown, [contenteditable="true"], .ProseMirror')]
+        .filter((el) => el.innerText.trim());
+      return (body.length ? body[body.length - 1] : turn).innerText;
+    }
+    // последний блок с меткой вне поля ввода и вне сообщений пользователя
+    const composer = findComposer();
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    let last = null;
+    while (walker.nextNode()) {
+      const n = walker.currentNode;
+      const el = n.parentElement;
+      if (!el || (composer && composer.contains(n))) continue;
+      if (el.closest('[data-message-author-role="user"]')) continue;
+      if (/\[[A-Z_]+_\d+\]/.test(n.nodeValue)) last = el;
+    }
+    const block = last && last.closest("p, li, div, section");
+    return block ? block.innerText : "";
   }
 
   async function restoreText(text) {
