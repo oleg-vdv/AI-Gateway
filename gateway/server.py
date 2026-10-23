@@ -16,6 +16,10 @@ Control Plane (F8):
   POST /try/api/preview     — что ушло бы провайдеру; ничего не хранит и не отправляет
   POST /try/api/file        — обезличенная копия файла для скачивания
 
+Корпоративный чат (выключается AIGATE_CHAT_PAGE=0):
+  GET  /chat                — страница чата поверх /v1/chat/completions
+  GET  /v1/models           — модели для выбора («провайдер/модель»)
+
 Безопасность (раздел 8 ТЗ): ключи каналов (X-AIGate-Key / Bearer),
 админ-токен (без него Control Plane доступен только с localhost),
 сравнение ключей — constant-time (hmac.compare_digest).
@@ -30,6 +34,7 @@ import itertools
 import json
 import logging
 import re
+import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -48,6 +53,11 @@ logger = logging.getLogger("aigate.server")
 _STATIC_DIR = Path(__file__).parent / "static"
 _MAX_BODY = 10 * 1024 * 1024  # 10 МБ
 _MAX_PREVIEW_CHARS = 20_000  # страница проверки — для фрагментов, не для документов
+
+# Дневные счётчики запросов по пользователям (AIGATE_DAILY_REQUEST_LIMIT).
+# В памяти процесса: после перезапуска счёт начинается заново.
+_usage: dict[tuple[str, str], int] = {}
+_usage_lock = threading.Lock()
 
 
 class ApiError(Exception):
@@ -153,6 +163,11 @@ class GatewayHandler(BaseHTTPRequestHandler):
             route = self._route()
             if route == "/healthz":
                 self._send_json(200, {"status": "ok", "version": __version__})
+            elif route == "/v1/models":
+                self._require_channel_auth()
+                self._send_json(200, {"object": "list", "data": self._models()})
+            elif route == "/chat" and self.settings.chat_page:
+                self._send_static("chat.html")
             elif route == "/admin/api/policy":
                 self._require_admin_auth()
                 self._send_json(200, self.pipeline.policy.policy.to_dict())
@@ -346,6 +361,41 @@ class GatewayHandler(BaseHTTPRequestHandler):
         except ValueError as e:
             raise ApiError(400, str(e))
 
+    def _models(self) -> list[dict]:
+        """Модели для выбора в чате: «провайдер/модель» из реестра."""
+        registry = getattr(self.pipeline.forwarder, "registry", None)
+        if registry is None:
+            name = self.pipeline.forwarder.provider_name
+            return [{"id": name, "object": "model", "owned_by": name, "local": False}]
+        sensitive = self.pipeline.policy.policy.sensitive_provider
+        return [
+            {
+                "id": f"{p.name}/{p.model}",
+                "object": "model",
+                "owned_by": p.name,
+                "default": p.name == registry.default_name,
+                # локальная модель: данные не покидают периметр вовсе
+                "local": p.name == sensitive or "localhost" in p.base_url or "127.0.0.1" in p.base_url,
+            }
+            for p in registry.list()
+            if p.enabled and p.model
+        ]
+
+    def _check_daily_limit(self, user: str) -> None:
+        limit = self.settings.daily_request_limit
+        if limit <= 0:
+            return
+        day = time.strftime("%Y-%m-%d")
+        with _usage_lock:
+            for key in [k for k in _usage if k[1] != day]:
+                del _usage[key]  # вчерашние счётчики не копятся
+            used = _usage.get((user, day), 0)
+            if used >= limit:
+                raise ApiError(
+                    429, f"Дневной лимит {limit} запросов исчерпан. Он обновится завтра."
+                )
+            _usage[(user, day)] = used + 1
+
     def _file(self, keep_session: bool) -> None:
         """Обезличить файл: {filename, content_base64[, user, group, session_id]}."""
         body = self._read_json()
@@ -421,10 +471,23 @@ class GatewayHandler(BaseHTTPRequestHandler):
         session_id = uuid.uuid4().hex
         user = str(body.get("user") or "egress-app")
         model = body.get("model")
+        self._check_daily_limit(user)
         try:
             sanitized_messages, total_counts = self._sanitize_messages(
                 messages, user, session_id, channel
             )
+            # что именно увидел провайдер в последнем сообщении пользователя:
+            # только метки, без значений — чат показывает это по кнопке
+            masked_last = next(
+                (
+                    m.get("content")
+                    for m in reversed(sanitized_messages)
+                    if isinstance(m, dict) and m.get("role") == "user"
+                    and isinstance(m.get("content"), str)
+                ),
+                None,
+            )
+            aigate_info = {"masked_entities": total_counts, "masked_last_user": masked_last}
             # Э3: чувствительные запросы — на выделенный провайдер политики
             provider = None
             if total_counts and self.pipeline.policy.policy.sensitive_provider:
@@ -432,7 +495,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
 
             if body.get("stream"):
                 self._stream_chat(
-                    sanitized_messages, model, provider, session_id, total_counts
+                    sanitized_messages, model, provider, session_id, aigate_info
                 )
                 return
 
@@ -460,10 +523,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
                         "finish_reason": "stop",
                     }
                 ],
-                "aigate": {
-                    "masked_entities": total_counts,
-                    "session_id": session_id,
-                },
+                "aigate": {**aigate_info, "session_id": session_id},
             },
         )
 
@@ -473,7 +533,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
         model: str | None,
         provider: str | None,
         session_id: str,
-        total_counts: dict[str, int],
+        aigate_info: dict,
     ) -> None:
         forwarder = self.pipeline.forwarder
         try:
@@ -522,7 +582,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
             if tail:
                 self.wfile.write(event({"content": tail}))
             self.wfile.write(
-                event({}, "stop", {"aigate": {"masked_entities": total_counts}})
+                event({}, "stop", {"aigate": aigate_info})
             )
             self.wfile.write(b"data: [DONE]\n\n")
         except (BrokenPipeError, ConnectionResetError):

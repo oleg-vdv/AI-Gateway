@@ -83,6 +83,10 @@ class Settings:
     # --- Страница «Проверь свой текст» (/try): ничего не хранит и не отправляет ---
     try_page: bool = True
 
+    # --- Корпоративный чат (/chat) и лимит запросов на пользователя в сутки ---
+    chat_page: bool = True
+    daily_request_limit: int = 0  # 0 = без лимита
+
     @classmethod
     def from_env(cls) -> "Settings":
         _load_dotenv()
@@ -108,4 +112,6 @@ class Settings:
             semantic_guard_provider=_env("SEMANTIC_GUARD_PROVIDER", ""),
             fail_closed=_env_bool("FAIL_CLOSED", True),
             try_page=_env_bool("TRY_PAGE", True),
+            chat_page=_env_bool("CHAT_PAGE", True),
+            daily_request_limit=int(_env("DAILY_REQUEST_LIMIT", "0")),
         )

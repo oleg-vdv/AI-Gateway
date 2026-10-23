@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Рабочий ИИ-чат — AI-Gate</title>
+<style>
+  /* Та же система, что у страницы /try: штемпельная краска для меток,
+     перфорация «корешка» отделяет то, что увидел сервис ИИ. */
+  :root {
+    --paper: #eef1f4;
+    --sheet: #fbfcfd;
+    --graphite: #1c2733;
+    --muted: #5b6876;
+    --rule: #cfd6de;
+    --ink: #4b3f9e;
+    --ink-soft: #e6e3f6;
+    --alarm: #b3261e;
+    --alarm-soft: #fbe9e7;
+    --ok: #2f6b4f;
+    --focus: #4b3f9e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #151b22; --sheet: #1d252e; --graphite: #e4e9ee; --muted: #9aa6b2;
+      --rule: #34404c; --ink: #a79cf0; --ink-soft: #2c2850; --alarm: #ef8a83;
+      --alarm-soft: #3a2224; --ok: #7cc4a0; --focus: #a79cf0;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--paper); color: var(--graphite);
+    font: 16px/1.55 "Segoe UI", "PT Sans", "Noto Sans", system-ui, sans-serif;
+    display: flex; flex-direction: column;
+  }
+  .bar {
+    display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center;
+    padding: 12px 16px; border-bottom: 1px solid var(--rule); background: var(--sheet);
+  }
+  .bar h1 { font-size: 1.05rem; font-weight: 700; margin: 0 auto 0 0; }
+  .bar label { color: var(--muted); font-size: .9rem; display: flex; gap: 6px; align-items: center; }
+  select, input[type=text], input[type=password] {
+    font: inherit; font-size: .92rem; color: inherit; background: var(--paper);
+    border: 1px solid var(--rule); border-radius: 6px; padding: 5px 8px;
+  }
+  .locality { font-size: .85rem; color: var(--muted); }
+  .locality.local { color: var(--ok); }
+  button {
+    font: inherit; border-radius: 6px; cursor: pointer;
+    border: 1px solid var(--rule); background: transparent; color: var(--graphite); padding: 6px 12px;
+  }
+  button.primary { background: var(--ink); border-color: var(--ink); color: #fff; font-weight: 600; padding: 8px 18px; }
+  button:disabled { opacity: .55; cursor: default; }
+  :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+  main { flex: 1; overflow-y: auto; }
+  .log { max-width: 780px; margin: 0 auto; padding: 24px 16px 8px; }
+  .empty { color: var(--muted); max-width: 60ch; }
+  .empty h2 { color: var(--graphite); font-size: 1.4rem; line-height: 1.2; margin: 8px 0 10px; }
+  .empty ul { padding-left: 1.2em; }
+
+  .msg { margin: 0 0 22px; }
+  .msg .who { font-size: .82rem; color: var(--muted); margin-bottom: 4px; }
+  .msg .body { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .msg.user .body {
+    background: var(--sheet); border: 1px solid var(--rule); border-radius: 10px; padding: 10px 14px;
+  }
+  .seen { margin-top: 6px; }
+  .seen summary { cursor: pointer; color: var(--ink); font-size: .86rem; list-style: none; }
+  .seen summary::-webkit-details-marker { display: none; }
+  .seen[open] summary { margin-bottom: 6px; }
+  .seen .stub {
+    font: 13.5px/1.55 ui-monospace, "Cascadia Mono", Consolas, monospace;
+    white-space: pre-wrap; overflow-wrap: anywhere;
+    padding: 10px 12px 10px 18px; border-radius: 6px; background: var(--sheet);
+    /* корешок: перфорация по левому краю */
+    background-image: radial-gradient(circle, var(--rule) 1.6px, transparent 2px);
+    background-size: 10px 10px; background-repeat: repeat-y; background-position: 4px 0;
+    border: 1px dashed var(--rule);
+  }
+  .token { color: var(--ink); background: var(--ink-soft); border-radius: 3px; padding: 0 3px; }
+  .notice { border-radius: 8px; padding: 10px 14px; background: var(--alarm-soft); color: var(--alarm); }
+  .cursor::after { content: "▍"; color: var(--muted); animation: blink 1s steps(2) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) { .cursor::after { animation: none; } }
+
+  .composer { border-top: 1px solid var(--rule); background: var(--sheet); }
+  .composer form { max-width: 780px; margin: 0 auto; padding: 12px 16px 14px; display: flex; gap: 10px; align-items: flex-end; }
+  textarea {
+    flex: 1; font: inherit; color: inherit; background: var(--paper);
+    border: 1px solid var(--rule); border-radius: 8px; padding: 10px 12px;
+    resize: none; min-height: 46px; max-height: 40vh;
+  }
+  .hint { max-width: 780px; margin: 0 auto; padding: 0 16px 10px; color: var(--muted); font-size: .82rem; }
+  .keybox { display: none; gap: 8px; align-items: center; }
+  .keybox.shown { display: flex; }
+  @media (max-width: 640px) {
+    .bar h1 { flex-basis: 100%; }
+  }
+</style>
+</head>
+<body>
+<header class="bar">
+  <h1>Рабочий ИИ-чат</h1>
+  <label>Модель <select id="model" aria-label="Модель"></select></label>
+  <span id="locality" class="locality"></span>
+  <label>Ваше имя <input id="user" type="text" size="14" autocomplete="name" placeholder="для журнала"></label>
+  <span id="keybox" class="keybox">
+    <label>Ключ доступа <input id="key" type="password" size="14" autocomplete="off"></label>
+  </span>
+  <button id="new" type="button">Новый диалог</button>
+</header>
+
+<main id="scroller">
+  <div id="log" class="log" aria-live="polite">
+    <div class="empty" id="empty">
+      <h2>Пишите как обычно — данные клиентов останутся в компании</h2>
+      <p>Перед отправкой шлюз заменяет ИИН, ФИО, телефоны, адреса, номера карт и счетов метками. Сервис ИИ отвечает по меткам, а вы видите ответ с настоящими значениями.</p>
+      <ul>
+        <li>Под каждым вашим сообщением можно открыть, что именно увидел ИИ.</li>
+        <li>Сообщения с ключами доступа и паролями не отправляются.</li>
+        <li>Диалог хранится только в этой вкладке и пропадёт после её закрытия.</li>
+      </ul>
+    </div>
+  </div>
+</main>
+
+<div class="composer">
+  <form id="form">
+    <textarea id="input" rows="1" placeholder="Например: подготовь ответ клиенту Айгуль Ахметовой по жалобе на двойное списание" aria-label="Сообщение"></textarea>
+    <button id="send" class="primary" type="submit">Отправить</button>
+  </form>
+  <p class="hint">Enter — отправить, Shift+Enter — новая строка.</p>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const LABELS = {
+    IIN: "ИИН", BIN: "БИН", PERSON: "ФИО", IBAN: "счёт", CARD: "карта",
+    SECRET: "ключ доступа или пароль", AMOUNT: "сумма", CONFIDENTIAL: "гриф конфиденциальности",
+    PHONE: "телефон", EMAIL: "почта", ID_DOC: "документ", BIRTHDATE: "дата рождения",
+    ADDRESS: "адрес", PLATE: "госномер", SEMANTIC: "конфиденциальный смысл"
+  };
+  const log = $("log"), input = $("input"), send = $("send"), modelSel = $("model");
+  const userInput = $("user"), keyInput = $("key"), keybox = $("keybox"), locality = $("locality");
+
+  // Имя и ключ — удобство одного рабочего места; диалог — только в памяти вкладки.
+  function stored(name) { try { return localStorage.getItem("aigate.chat." + name) || ""; } catch (_) { return ""; } }
+  function store(name, value) { try { localStorage.setItem("aigate.chat." + name, value); } catch (_) {} }
+  userInput.value = stored("user");
+  keyInput.value = stored("key");
+  if (keyInput.value) keybox.classList.add("shown");
+  userInput.addEventListener("change", () => store("user", userInput.value.trim()));
+  keyInput.addEventListener("change", () => store("key", keyInput.value.trim()));
+
+  const base = location.href.replace(/\/?(\?.*)?$/, "/").replace(/chat\/$/, "");
+  const api = (path) => new URL(path, base);
+  let history = [];
+  let models = [];
+
+  function headers() {
+    const h = { "Content-Type": "application/json" };
+    if (keyInput.value.trim()) h["X-AIGate-Key"] = keyInput.value.trim();
+    return h;
+  }
+
+  function esc(s) {
+    return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  }
+
+  function showLocality() {
+    const m = models.find((x) => x.id === modelSel.value);
+    if (!m) { locality.textContent = ""; return; }
+    locality.className = "locality" + (m.local ? " local" : "");
+    locality.textContent = m.local ? "Модель внутри компании: данные не уходят наружу" : "Внешний сервис: уходит только текст с метками";
+  }
+
+  async function loadModels() {
+    try {
+      const resp = await fetch(api("v1/models"), { headers: headers() });
+      if (resp.status === 401) { keybox.classList.add("shown"); keyInput.focus(); return; }
+      const data = await resp.json();
+      models = data.data || [];
+      modelSel.innerHTML = models.map((m) => `<option value="${esc(m.id)}"${m.default ? " selected" : ""}>${esc(m.id)}</option>`).join("");
+      showLocality();
+    } catch (_) { /* шлюз недоступен: сообщит первая отправка */ }
+  }
+  modelSel.addEventListener("change", showLocality);
+  keyInput.addEventListener("change", loadModels);
+
+  function addMessage(role, text) {
+    $("empty")?.remove();
+    const el = document.createElement("div");
+    el.className = "msg " + role;
+    el.innerHTML = `<div class="who">${role === "user" ? "Вы" : "ИИ"}</div><div class="body"></div>`;
+    el.querySelector(".body").textContent = text;
+    log.appendChild(el);
+    scrollDown();
+    return el;
+  }
+
+  function addSeen(msgEl, masked, counts) {
+    if (!masked) return;
+    const n = Object.values(counts || {}).reduce((a, b) => a + b, 0);
+    const d = document.createElement("details");
+    d.className = "seen";
+    d.innerHTML = `<summary>${n ? "Что увидел ИИ: скрыто " + n : "Что увидел ИИ: персональных данных не найдено"}</summary><div class="stub"></div>`;
+    d.querySelector(".stub").innerHTML = esc(masked).replace(/\[[A-Z_]+_\d+\]/g, (t) => `<span class="token">${t}</span>`);
+    msgEl.appendChild(d);
+  }
+
+  function addNotice(text) {
+    const el = document.createElement("div");
+    el.className = "msg";
+    el.innerHTML = '<div class="notice"></div>';
+    el.querySelector(".notice").textContent = text;
+    log.appendChild(el);
+    scrollDown();
+  }
+
+  function scrollDown() { $("scroller").scrollTop = $("scroller").scrollHeight; }
+
+  async function submit(e) {
+    e.preventDefault();
+    const text = input.value.trim();
+    if (!text || send.disabled) return;
+    send.disabled = true;
+    const userEl = addMessage("user", text);
+    const pending = history.concat([{ role: "user", content: text }]);
+    input.value = ""; autosize();
+    const answerEl = addMessage("assistant", "");
+    const body = answerEl.querySelector(".body");
+    body.classList.add("cursor");
+    let answer = "";
+    try {
+      const resp = await fetch(api("v1/chat/completions"), {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({ model: modelSel.value || undefined, messages: pending, stream: true, user: userInput.value.trim() || "chat-user" })
+      });
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        if (resp.status === 401) { keybox.classList.add("shown"); keyInput.focus(); }
+        throw Object.assign(new Error(data.detail || "Шлюз вернул ошибку " + resp.status), { status: resp.status });
+      }
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let idx;
+        while ((idx = buffer.indexOf("\n\n")) >= 0) {
+          const line = buffer.slice(0, idx).trim();
+          buffer = buffer.slice(idx + 2);
+          if (!line.startsWith("data: ")) continue;
+          const payload = line.slice(6);
+          if (payload === "[DONE]") continue;
+          const ev = JSON.parse(payload);
+          if (ev.error) throw new Error(ev.error.message);
+          const delta = ev.choices?.[0]?.delta?.content;
+          if (delta) { answer += delta; body.textContent = answer; scrollDown(); }
+          if (ev.aigate) addSeen(userEl, ev.aigate.masked_last_user, ev.aigate.masked_entities);
+        }
+      }
+      history = pending.concat([{ role: "assistant", content: answer }]);
+    } catch (err) {
+      answerEl.remove();
+      if (err.status === 403) {
+        const reason = err.message.replace(/\(([A-Z_, ]+)\)/, (_, codes) =>
+          "(" + codes.split(/,\s*/).map((c) => LABELS[c] || c).join(", ") + ")");
+        addNotice("Сообщение не отправлено. " + reason + " Уберите эти данные и отправьте снова.");
+        input.value = text; autosize();
+      } else if (err.message === "Failed to fetch") {
+        addNotice("Шлюз не отвечает. Проверьте подключение и отправьте снова.");
+        input.value = text; autosize();
+      } else {
+        addNotice(err.message);
+        if (!answer) { input.value = text; autosize(); }
+      }
+      if (!answer) userEl.remove();
+    } finally {
+      body.classList.remove("cursor");
+      send.disabled = false;
+      input.focus();
+    }
+  }
+
+  function autosize() {
+    input.style.height = "auto";
+    input.style.height = Math.min(input.scrollHeight + 2, window.innerHeight * 0.4) + "px";
+  }
+
+  $("form").addEventListener("submit", submit);
+  input.addEventListener("input", autosize);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) submit(e);
+  });
+  $("new").addEventListener("click", () => {
+    history = [];
+    log.innerHTML = "";
+    input.focus();
+  });
+
+  loadModels();
+  input.focus();
+})();
+</script>
+</body>
+</html>
