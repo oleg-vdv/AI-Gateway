@@ -66,6 +66,16 @@
   </section>
 
   <section class="card">
+    <h2>Отчёт владельцу за месяц</h2>
+    <p>
+      <input type="month" id="report-month" aria-label="Месяц отчёта">
+      <button id="report-open">Открыть для печати</button>
+      <button id="report-send">Отправить в Telegram</button>
+      <span id="report-status" style="color:var(--muted);font-size:.85rem;margin-left:.5rem"></span>
+    </p>
+  </section>
+
+  <section class="card">
     <h2>Журнал аудита (без значений — только типы и счётчики)</h2>
     <div class="scroll"><table id="audit-table">
       <thead><tr><th>Время</th><th>Пользователь</th><th>Канал</th><th>Вердикт</th><th>Сущности</th></tr></thead>
@@ -135,6 +145,27 @@ async function loadAudit() {
       <td>${Object.entries(r.entity_counts).map(([t,c]) => `${t}×${c}`).join(', ') || '—'}</td>
     </tr>`).join('');
 }
+
+// по умолчанию — прошлый месяц
+const monthInput = document.getElementById('report-month');
+const prev = new Date(); prev.setDate(1); prev.setMonth(prev.getMonth() - 1);
+monthInput.value = prev.toISOString().slice(0, 7);
+const reportStatus = document.getElementById('report-status');
+
+document.getElementById('report-open').addEventListener('click', async () => {
+  // отчёт требует админ-токен в заголовке, поэтому открываем полученную страницу из памяти
+  const win = window.open('', '_blank');
+  const resp = await fetch('/admin/report/monthly?month=' + monthInput.value, { headers: authHeaders() });
+  if (!resp.ok) { win.close(); reportStatus.textContent = 'Ошибка: ' + resp.status; return; }
+  win.location = URL.createObjectURL(new Blob([await resp.text()], { type: 'text/html' }));
+});
+
+document.getElementById('report-send').addEventListener('click', async () => {
+  reportStatus.textContent = 'Отправляю…';
+  const resp = await fetch('/admin/api/report/send?month=' + monthInput.value, { method: 'POST', headers: authHeaders() });
+  const data = await resp.json().catch(() => ({}));
+  reportStatus.textContent = resp.ok ? 'Отправлено в Telegram' : (data.detail || 'Ошибка: ' + resp.status);
+});
 
 async function refresh() {
   try { await Promise.all([loadReport(), loadPolicy(), loadAudit()]); }

@@ -10,6 +10,9 @@ Control Plane (F8):
   GET  /admin/api/policy, PUT /admin/api/policy
   GET  /admin/api/audit, /admin/api/audit/verify, /admin/api/report, /admin/api/config
   GET  /admin — консоль (статический UI)
+  GET  /admin/api/report/monthly?month=YYYY-MM — отчёт владельцу (JSON)
+  GET  /admin/report/monthly?month=YYYY-MM     — он же, страница для печати
+  POST /admin/api/report/send?month=YYYY-MM    — отправить в Telegram
 
 Страница «Проверь свой текст» (выключается AIGATE_TRY_PAGE=0):
   GET  /try                 — страница
@@ -28,6 +31,7 @@ Control Plane (F8):
 from __future__ import annotations
 
 import base64
+import datetime
 import binascii
 import hmac
 import itertools
@@ -42,7 +46,7 @@ from pathlib import Path
 
 from gateway import __version__
 from gateway.config import Settings
-from gateway.core import files
+from gateway.core import files, owner_report
 from gateway.core.pipeline import Pipeline
 from gateway.core.tokenizer import StreamDetokenizer
 from gateway.core.providers import ProviderConfig
@@ -196,6 +200,17 @@ class GatewayHandler(BaseHTTPRequestHandler):
                         since=float(q.get("since", "0")), until=until
                     ),
                 )
+            elif route == "/admin/api/report/monthly":
+                self._require_admin_auth()
+                self._send_json(200, self._monthly_report())
+            elif route == "/admin/report/monthly":
+                self._require_admin_auth()
+                body = owner_report.render_html(self._monthly_report()).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
             elif route == "/admin/api/report.csv":
                 self._require_admin_auth()
                 since = float(self._query().get("since", "0"))
@@ -284,6 +299,21 @@ class GatewayHandler(BaseHTTPRequestHandler):
                         413, f"Текст длиннее {_MAX_PREVIEW_CHARS} символов — проверьте его частями"
                     )
                 self._send_json(200, self.pipeline.preview(text))
+            elif route == "/admin/api/report/send":
+                self._require_admin_auth()
+                s = self.settings
+                if not (s.telegram_bot_token and s.telegram_chat_id):
+                    raise ApiError(
+                        409, "Telegram не настроен: задайте AIGATE_TELEGRAM_BOT_TOKEN и AIGATE_TELEGRAM_CHAT_ID"
+                    )
+                report = self._monthly_report()
+                try:
+                    owner_report.send_telegram(
+                        s.telegram_bot_token, s.telegram_chat_id, owner_report.render_text(report)
+                    )
+                except Exception as e:
+                    raise ApiError(502, f"Отчёт не отправлен: {e}")
+                self._send_json(200, {"sent": report["month"]})
             elif route == "/v1/file":
                 self._require_channel_auth()
                 self._file(keep_session=True)
@@ -360,6 +390,15 @@ class GatewayHandler(BaseHTTPRequestHandler):
             return CheckRequest.from_dict(body)
         except ValueError as e:
             raise ApiError(400, str(e))
+
+    def _monthly_report(self) -> dict:
+        """Отчёт за ?month=YYYY-MM; по умолчанию — за прошлый месяц."""
+        month = self._query().get("month") or owner_report.previous_month(datetime.date.today())
+        if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month):
+            raise ApiError(400, "month: формат YYYY-MM")
+        return owner_report.build(
+            self.pipeline.audit, month, self.settings.report_utc_offset
+        )
 
     def _models(self) -> list[dict]:
         """Модели для выбора в чате: «провайдер/модель» из реестра."""

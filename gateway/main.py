@@ -9,6 +9,7 @@ from gateway.config import Settings
 from gateway.core.audit import AuditLog
 from gateway.core.detectors.custom import CustomRuleRegistry
 from gateway.core.mapping_store import MappingStore
+from gateway.core.owner_report import MonthlyScheduler, send_telegram
 from gateway.core.pipeline import Pipeline
 from gateway.core.policy import PolicyEngine
 from gateway.core.providers import MultiForwarder, ProviderConfig, ProviderRegistry
@@ -73,6 +74,17 @@ def main() -> None:
         pipeline.forwarder.provider_name,
         settings.semantic_guard_mode,
     )
+    if settings.telegram_bot_token and settings.telegram_chat_id:
+        MonthlyScheduler(
+            pipeline.audit,
+            settings.report_state_path,
+            send=lambda text: send_telegram(
+                settings.telegram_bot_token, settings.telegram_chat_id, text
+            ),
+            day=settings.report_day,
+            utc_offset_hours=settings.report_utc_offset,
+        ).start()
+        logger.info("Ежемесячный отчёт в Telegram: %s-го числа", settings.report_day)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -87,6 +87,13 @@ class Settings:
     chat_page: bool = True
     daily_request_limit: int = 0  # 0 = без лимита
 
+    # --- Ежемесячный отчёт владельцу (Telegram; без значений ПДн, только счётчики) ---
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+    report_day: int = 1            # в какой день месяца отправлять отчёт за прошлый
+    report_utc_offset: int = 5     # часовой пояс границ месяца (РК — UTC+5)
+    report_state_path: Path = field(default_factory=lambda: Path("data/report_state.json"))
+
     @classmethod
     def from_env(cls) -> "Settings":
         _load_dotenv()
@@ -114,4 +121,9 @@ class Settings:
             try_page=_env_bool("TRY_PAGE", True),
             chat_page=_env_bool("CHAT_PAGE", True),
             daily_request_limit=int(_env("DAILY_REQUEST_LIMIT", "0")),
+            telegram_bot_token=_env("TELEGRAM_BOT_TOKEN", ""),
+            telegram_chat_id=_env("TELEGRAM_CHAT_ID", ""),
+            report_day=int(_env("REPORT_DAY", "1")),
+            report_utc_offset=int(_env("REPORT_UTC_OFFSET", "5")),
+            report_state_path=Path(_env("REPORT_STATE_PATH", "data/report_state.json")),
         )
