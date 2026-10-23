@@ -470,12 +470,35 @@
   }
 
   // --- панель (shadow DOM вне <body>) ---
+  //
+  // v0.3.5: панель можно свернуть в значок, скрыть до следующего ответа и
+  // перетащить за заголовок. Положение и «свёрнута ли» запоминаются для
+  // каждого сайта в chrome.storage.local — хранилище расширения, а не сайта.
 
   let panel = null;
+  let hiddenFor = null; // набор меток, для которого пользователь скрыл панель
+  const STATE_KEY = "panel:" + location.host;
 
-  function buildPanel() {
+  function loadPanelState() {
+    return new Promise((resolve) => {
+      try {
+        chrome.storage.local.get(STATE_KEY, (data) => resolve((data && data[STATE_KEY]) || {}));
+      } catch (_) {
+        resolve({});
+      }
+    });
+  }
+
+  function savePanelState(state) {
+    try {
+      chrome.storage.local.set({ [STATE_KEY]: state });
+    } catch (_) { /* расширение перезагружено — положение не сохранится, не страшно */ }
+  }
+
+  async function buildPanel() {
+    const state = await loadPanelState();
     const host = document.createElement("aigate-panel");
-    host.style.cssText = "all:initial;position:fixed;right:16px;bottom:96px;z-index:2147483647";
+    host.style.cssText = "all:initial;position:fixed;z-index:2147483647";
     // вне <body>: ни React, ни редакторы сайта не наблюдают эту часть документа
     document.documentElement.appendChild(host);
     const root = host.attachShadow({ mode: "closed" });
@@ -483,32 +506,124 @@
       <style>
         .box { font: 13px/1.45 system-ui, "Segoe UI", sans-serif; color: #1c2733; background: #fbfcfd;
                border: 1px solid #cfd6de; border-radius: 10px; box-shadow: 0 6px 20px rgba(28,39,51,.18);
-               width: 300px; max-height: 50vh; display: flex; flex-direction: column; }
-        header { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid #e3e8ee;
-                 cursor: pointer; user-select: none; }
+               width: 290px; max-height: 50vh; display: flex; flex-direction: column; }
+        header { display: flex; align-items: center; gap: 6px; padding: 6px 6px 6px 10px;
+                 border-bottom: 1px solid #e3e8ee; cursor: grab; user-select: none; touch-action: none; }
+        header.dragging { cursor: grabbing; }
         header b { font-weight: 650; flex: 1; }
         .count { color: #4b3f9e; font-weight: 600; }
+        .icon { background: transparent; color: #5b6876; border: 0; border-radius: 6px; width: 26px; height: 26px;
+                font: 600 16px/1 system-ui, sans-serif; cursor: pointer; padding: 0; }
+        .icon:hover { background: #e6e3f6; color: #4b3f9e; }
         .list { overflow: auto; padding: 6px 10px; margin: 0; list-style: none; }
         .list li { display: flex; gap: 8px; padding: 3px 0; border-bottom: 1px dashed #e3e8ee; }
         .tok { color: #4b3f9e; background: #e6e3f6; border-radius: 3px; padding: 0 3px;
                font: 12px ui-monospace, Consolas, monospace; white-space: nowrap; align-self: flex-start; }
         .val { overflow-wrap: anywhere; }
         .actions { padding: 8px 10px; border-top: 1px solid #e3e8ee; display: flex; flex-direction: column; gap: 4px; }
-        button { font: inherit; background: #4b3f9e; color: #fff; border: 0; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+        .copy { font: inherit; background: #4b3f9e; color: #fff; border: 0; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
         button:focus-visible { outline: 2px solid #4b3f9e; outline-offset: 2px; }
         .note { color: #5b6876; font-size: 12px; }
-        .collapsed .list, .collapsed .actions { display: none; }
+        .pill { display: none; font: 600 13px/1 system-ui, "Segoe UI", sans-serif; color: #fff; background: #4b3f9e;
+                border: 0; border-radius: 999px; padding: 8px 12px; box-shadow: 0 4px 14px rgba(28,39,51,.25);
+                cursor: grab; user-select: none; touch-action: none; }
+        .collapsed .box { display: none; }
+        .collapsed .pill { display: inline-block; }
       </style>
-      <div class="box">
-        <header title="Свернуть или развернуть"><b>AI-Gate: настоящие значения</b><span class="count"></span></header>
-        <ul class="list"></ul>
-        <div class="actions">
-          <button type="button" class="copy">Скопировать последний ответ с настоящими данными</button>
-          <span class="note">Сайт видит только метки. Значения показаны здесь и только вам.</span>
+      <div class="wrap">
+        <div class="box" role="dialog" aria-label="AI-Gate: настоящие значения">
+          <header title="Перетащите, чтобы передвинуть">
+            <b>AI-Gate: настоящие значения</b><span class="count"></span>
+            <button type="button" class="icon min" title="Свернуть в значок" aria-label="Свернуть в значок">–</button>
+            <button type="button" class="icon close" title="Скрыть до следующего ответа" aria-label="Скрыть до следующего ответа">×</button>
+          </header>
+          <ul class="list"></ul>
+          <div class="actions">
+            <button type="button" class="copy">Скопировать последний ответ с настоящими данными</button>
+            <span class="note">Сайт видит только метки. Значения показаны здесь и только вам.</span>
+          </div>
         </div>
+        <button type="button" class="pill" title="Развернуть. Можно перетащить">AI-Gate · <span class="pill-count"></span></button>
       </div>`;
-    const box = root.querySelector(".box");
-    root.querySelector("header").addEventListener("click", () => box.classList.toggle("collapsed"));
+    const wrap = root.querySelector(".wrap");
+
+    // --- положение ---
+    function place(left, top) {
+      const w = host.offsetWidth || 290;
+      const h = host.offsetHeight || 60;
+      left = Math.max(4, Math.min(left, window.innerWidth - w - 4));
+      top = Math.max(4, Math.min(top, window.innerHeight - h - 4));
+      host.style.left = left + "px";
+      host.style.top = top + "px";
+      host.style.right = host.style.bottom = "auto";
+      return { left, top };
+    }
+    if (typeof state.left === "number") {
+      requestAnimationFrame(() => place(state.left, state.top));
+    } else {
+      host.style.right = "16px";
+      host.style.bottom = "96px";
+    }
+
+    function setCollapsed(collapsed) {
+      wrap.classList.toggle("collapsed", collapsed);
+      state.collapsed = collapsed;
+      savePanelState(state);
+      requestAnimationFrame(() => {
+        const r = host.getBoundingClientRect();
+        place(r.left, r.top); // свёрнутая/развёрнутая панель не должна уехать за край
+      });
+    }
+    wrap.classList.toggle("collapsed", !!state.collapsed);
+
+    // перетаскивание: за заголовок панели или за значок; короткий клик по значку разворачивает
+    function draggable(handle, onClick) {
+      handle.addEventListener("pointerdown", (e) => {
+        if (e.button !== 0 || (e.target.closest(".icon"))) return;
+        const r = host.getBoundingClientRect();
+        const dx = e.clientX - r.left, dy = e.clientY - r.top;
+        const sx = e.clientX, sy = e.clientY;
+        let moved = false;
+        handle.setPointerCapture(e.pointerId);
+        handle.classList.add("dragging");
+        const move = (ev) => {
+          if (!moved && Math.hypot(ev.clientX - sx, ev.clientY - sy) < 4) return;
+          moved = true;
+          place(ev.clientX - dx, ev.clientY - dy);
+        };
+        const up = () => {
+          handle.removeEventListener("pointermove", move);
+          handle.removeEventListener("pointerup", up);
+          handle.removeEventListener("pointercancel", up);
+          handle.classList.remove("dragging");
+          if (moved) {
+            const r2 = host.getBoundingClientRect();
+            state.left = r2.left;
+            state.top = r2.top;
+            savePanelState(state);
+          } else if (onClick) {
+            onClick();
+          }
+        };
+        handle.addEventListener("pointermove", move);
+        handle.addEventListener("pointerup", up);
+        handle.addEventListener("pointercancel", up);
+      });
+    }
+    draggable(root.querySelector("header"), null);
+    draggable(root.querySelector(".pill"), () => setCollapsed(false));
+    root.querySelector(".pill").addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setCollapsed(false); }
+    });
+    root.querySelector(".min").addEventListener("click", () => setCollapsed(true));
+    root.querySelector(".close").addEventListener("click", () => {
+      hiddenFor = currentTokensKey;
+      host.style.display = "none";
+    });
+    window.addEventListener("resize", () => {
+      if (host.style.left) place(parseFloat(host.style.left), parseFloat(host.style.top));
+    });
+
     root.querySelector(".copy").addEventListener("click", async () => {
       const text = lastAssistantText();
       if (!text) return notify("ответ не найден на странице", "info");
@@ -521,8 +636,16 @@
         notify("браузер не дал доступ к буферу обмена", "error");
       }
     });
-    return { host, list: root.querySelector(".list"), count: root.querySelector(".count") };
+    return {
+      host,
+      list: root.querySelector(".list"),
+      count: root.querySelector(".count"),
+      pillCount: root.querySelector(".pill-count"),
+    };
   }
+
+  let currentTokensKey = "";
+  let building = null;
 
   async function refreshPanel() {
     const tokens = [...new Set([...visibleText().matchAll(TOKEN_RE_G)].map((m) => m[0]))];
@@ -541,9 +664,18 @@
       if (panel) panel.host.style.display = "none";
       return;
     }
-    if (!panel || !panel.host.isConnected) panel = buildPanel();
+    currentTokensKey = known.map(([t]) => t).sort().join(" ");
+    if (!panel || !panel.host.isConnected) {
+      building = building || buildPanel();
+      panel = await building;
+      building = null;
+    }
+    // скрыта пользователем — до тех пор, пока не появятся новые метки
+    if (hiddenFor !== null && hiddenFor === currentTokensKey) return;
+    hiddenFor = null;
     panel.host.style.display = "block";
     panel.count.textContent = String(known.length);
+    panel.pillCount.textContent = String(known.length);
     panel.list.replaceChildren(
       ...known.map(([t, v]) => {
         const li = document.createElement("li");

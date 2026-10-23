@@ -1,5 +1,11 @@
 # AI-Gate DLP browser extension — changelog
 
+## 0.3.5
+- The values panel can be minimised to a small "AI-Gate · N" badge (click to
+  expand), hidden until the next reply with new placeholders, and dragged by
+  its header or by the badge. Position and minimised state are remembered per
+  site in the extension's own storage.
+
 ## 0.3.4 — security fix
 - **Messages on claude.ai were sent unmasked.** The composer was found only by
   fixed selectors; Claude's new markup matched none of them, so the Enter
