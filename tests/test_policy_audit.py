@@ -153,6 +153,23 @@ class TestAudit(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(broken, 1)
 
+    def test_log_is_utf8_regardless_of_locale(self):
+        # Хеш считается от UTF-8; на Windows файл без явной кодировки писался
+        # в cp1251, и журнал с кириллицей не проверялся вне этой машины.
+        audit = AuditLog(self.path)
+        audit.append(
+            user="оператор",
+            channel=Channel.BROWSER,
+            provider="openai",
+            verdict=Verdict.MASKED,
+            entity_counts={"IIN": 1},
+            policy_actions={"IIN": "mask"},
+            cross_border_basis="согласие субъекта",
+        )
+        record = json.loads(self.path.read_bytes().decode("utf-8"))
+        self.assertEqual(record["user"], "оператор")
+        self.assertTrue(AuditLog(self.path).verify_chain()[0])
+
     def test_no_values_in_log(self):
         audit = AuditLog(self.path)
         self._append(audit)

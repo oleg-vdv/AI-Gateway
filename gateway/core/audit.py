@@ -39,7 +39,7 @@ class AuditLog:
         if not self._path.exists():
             return GENESIS_HASH
         last = GENESIS_HASH
-        with self._path.open() as f:
+        with self._path.open(encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if line:
@@ -72,7 +72,7 @@ class AuditLog:
                 prev_hash=self._last_hash,
             )
             record.hash = _record_hash(self._last_hash, record)
-            with self._path.open("a") as f:
+            with self._path.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(record.to_dict(), ensure_ascii=False) + "\n")
             self._last_hash = record.hash
             return record
@@ -81,7 +81,7 @@ class AuditLog:
         if not self._path.exists():
             return []
         records = []
-        with self._path.open() as f:
+        with self._path.open(encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if line:
